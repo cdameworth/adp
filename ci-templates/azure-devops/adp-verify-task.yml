@@ -1,0 +1,121 @@
+# ADP Verify Task for Azure DevOps
+#
+# Usage in azure-pipelines.yml:
+#
+#   - template: adp-verify-task.yml
+#     parameters:
+#       adpUrl: $(ADP_URL)
+#       adpToken: $(ADP_TOKEN)
+#
+# Or use the inline script version below
+
+parameters:
+  - name: adpUrl
+    type: string
+    displayName: 'ADP Server URL'
+  - name: adpToken
+    type: string
+    displayName: 'ADP API Token'
+  - name: failOnUnverified
+    type: boolean
+    default: true
+    displayName: 'Fail on unverified commits'
+  - name: verifyAllCommits
+    type: boolean
+    default: true
+    displayName: 'Verify all commits in push'
+
+steps:
+  - bash: |
+      set -e
+
+      echo "##[section]ADP Verification"
+      echo "ADP URL: $ADP_URL"
+
+      # Determine commits to verify
+      if [ "$VERIFY_ALL_COMMITS" = "true" ] && [ -n "$BUILD_SOURCEVERSION_BEFORE" ] && [ "$BUILD_SOURCEVERSION_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+        COMMITS=$(git rev-list ${BUILD_SOURCEVERSION_BEFORE}..${BUILD_SOURCEVERSION})
+      else
+        COMMITS="${BUILD_SOURCEVERSION}"
+      fi
+
+      if [ -z "$COMMITS" ]; then
+        echo "##[section]No commits to verify"
+        exit 0
+      fi
+
+      TOTAL=0
+      VERIFIED_COUNT=0
+      UNVERIFIED_COUNT=0
+      FAILED=false
+      UNVERIFIED_LIST=""
+
+      for commit in $COMMITS; do
+        TOTAL=$((TOTAL + 1))
+        COMMIT_SHORT="${commit:0:8}"
+
+        echo "Checking commit: $COMMIT_SHORT"
+
+        RESPONSE=$(curl -sf \
+          --max-time 10 \
+          -X POST "${ADP_URL}/v1/commits/verify" \
+          -H "Authorization: Bearer ${ADP_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "{\"commit_sha\": \"$commit\"}" 2>/dev/null) || {
+          echo "##[warning]Failed to contact ADP server for commit $COMMIT_SHORT"
+          UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1))
+          UNVERIFIED_LIST="$UNVERIFIED_LIST $commit"
+          FAILED=true
+          continue
+        }
+
+        VERIFIED=$(echo "$RESPONSE" | jq -r '.verified // false')
+
+        if [ "$VERIFIED" = "true" ]; then
+          echo "  ✅ $COMMIT_SHORT: Verified"
+          VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+        else
+          REASON=$(echo "$RESPONSE" | jq -r '.reason // "No audit trail found"')
+          echo "  ❌ $COMMIT_SHORT: Not verified - $REASON"
+          UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1))
+          UNVERIFIED_LIST="$UNVERIFIED_LIST $commit"
+          FAILED=true
+        fi
+      done
+
+      echo ""
+      echo "##[section]ADP Verification Summary"
+      echo "Total commits: $TOTAL"
+      echo "Verified: $VERIFIED_COUNT"
+      echo "Unverified: $UNVERIFIED_COUNT"
+
+      # Set output variables
+      echo "##vso[task.setvariable variable=ADP_TOTAL_COMMITS]$TOTAL"
+      echo "##vso[task.setvariable variable=ADP_VERIFIED_COUNT]$VERIFIED_COUNT"
+      echo "##vso[task.setvariable variable=ADP_UNVERIFIED_COUNT]$UNVERIFIED_COUNT"
+      echo "##vso[task.setvariable variable=ADP_ALL_VERIFIED]$([ "$FAILED" = "false" ] && echo "true" || echo "false")"
+
+      if [ "$FAILED" = "true" ]; then
+        echo ""
+        echo "##[warning]Some commits are missing ADP audit trails:"
+        for commit in $UNVERIFIED_LIST; do
+          MSG=$(git log --format="%s" -n 1 "$commit" 2>/dev/null || echo "Unknown")
+          echo "  - ${commit:0:8}: $MSG"
+        done
+        echo ""
+        echo "Ensure commits are made with an active ADP session."
+
+        if [ "$FAIL_ON_UNVERIFIED" = "true" ]; then
+          echo "##vso[task.complete result=Failed;]Commits missing ADP audit trail"
+          exit 1
+        fi
+      else
+        echo ""
+        echo "##[section]✅ All commits verified!"
+      fi
+    displayName: 'Verify ADP Audit Trail'
+    env:
+      ADP_URL: ${{ parameters.adpUrl }}
+      ADP_TOKEN: ${{ parameters.adpToken }}
+      FAIL_ON_UNVERIFIED: ${{ parameters.failOnUnverified }}
+      VERIFY_ALL_COMMITS: ${{ parameters.verifyAllCommits }}

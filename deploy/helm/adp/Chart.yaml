@@ -1,0 +1,28 @@
+apiVersion: v2
+name: adp
+description: Agent Developer Portal - Agent-agnostic infrastructure for AI governance
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - ai-governance
+  - agent-orchestration
+  - backstage
+  - developer-portal
+  - mcp
+home: https://adp.example.com
+maintainers:
+  - name: ADP Team
+dependencies:
+  - name: postgresql
+    version: "14.3.3"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "18.6.1"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: neo4j
+    version: "5.15.0"
+    repository: "https://helm.neo4j.com/neo4j"
+    condition: neo4j.enabled

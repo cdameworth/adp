@@ -1,0 +1,57 @@
+# docker-compose.sqlite.yml
+#
+# Lightweight ADP stack for local development.
+# Runs adp-server in SQLite mode so it reads from the same ~/.adp/adp.db
+# that adp-mcp writes to. No PostgreSQL, Redis, or other external services needed.
+#
+# Usage:
+#   docker compose -f docker-compose.sqlite.yml up -d
+#
+# The MCP server (adp-mcp) runs locally on the developer's machine (not in Docker).
+# The dashboard connects to adp-server which reads the same SQLite file.
+
+services:
+  adp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ADP_STORE: sqlite
+      ADP_SQLITE_PATH: /data/adp.db
+      ADP_SERVER_PORT: "8080"
+      ADP_LOG_LEVEL: debug
+      ADP_LOG_FORMAT: text
+      ADP_ENVIRONMENT: development
+    volumes:
+      # Mount the host's ~/.adp directory so adp-server reads the same DB as adp-mcp
+      - ${HOME}/.adp:/data
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  adp-dashboard:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_ADP_API_URL: http://localhost:8080
+    ports:
+      - "3002:3000"
+    environment:
+      ADP_API_URL: http://adp-server:8080
+    depends_on:
+      adp-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped

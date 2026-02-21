@@ -1,0 +1,317 @@
+# Default values for ADP
+# This is a YAML-formatted file.
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Replica configuration
+replicaCount: 2
+
+# Image configuration
+image:
+  repository: adp/adp-server
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to Chart.appVersion
+
+# Image pull secrets
+imagePullSecrets: []
+
+# Name overrides
+nameOverride: ""
+fullnameOverride: ""
+
+# Service account configuration
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+
+# Security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: adp.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: adp-tls
+    #   hosts:
+    #     - adp.local
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# Autoscaling
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Health probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# ADP-specific configuration
+adp:
+  # Server configuration
+  server:
+    port: 8080
+    readTimeout: 30s
+    writeTimeout: 30s
+    shutdownTimeout: 30s
+
+  # Authentication
+  auth:
+    enabled: true
+    jwksURL: ""  # OIDC provider JWKS URL
+    issuer: ""   # Token issuer
+    audience: "" # Expected audience
+
+  # SAML SSO
+  saml:
+    enabled: false
+    rootURL: ""
+    idpMetadataURL: ""
+    certFile: ""
+    keyFile: ""
+
+  # Rate limiting
+  rateLimit:
+    enabled: true
+    requestsPerMinute: 1000
+
+  # Logging
+  logging:
+    level: info
+    format: json
+
+  # Tracing
+  tracing:
+    enabled: false
+    exporter: otlp-grpc
+    endpoint: ""
+    sampleRate: 0.1
+
+  # Metrics
+  metrics:
+    enabled: true
+    port: 9090
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: ""  # Set via secret
+    database: adp
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+# External PostgreSQL (when postgresql.enabled=false)
+externalDatabase:
+  host: ""
+  port: 5432
+  database: adp
+  username: adp
+  password: ""
+  existingSecret: ""
+  existingSecretPasswordKey: postgres-password
+
+# Redis configuration
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: true
+    password: ""  # Set via secret
+  master:
+    persistence:
+      enabled: true
+      size: 1Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+# External Redis (when redis.enabled=false)
+externalRedis:
+  host: ""
+  port: 6379
+  password: ""
+  existingSecret: ""
+  existingSecretPasswordKey: redis-password
+  db: 0
+  mode: standalone  # standalone, cluster, sentinel
+
+# Neo4j configuration
+neo4j:
+  enabled: true
+  neo4j:
+    password: ""  # Set via secret
+  volumes:
+    data:
+      mode: defaultStorageClass
+      defaultStorageClass:
+        requests:
+          storage: 10Gi
+
+# External Neo4j (when neo4j.enabled=false)
+externalNeo4j:
+  uri: ""
+  username: neo4j
+  password: ""
+  existingSecret: ""
+  existingSecretPasswordKey: neo4j-password
+
+# Qdrant configuration
+qdrant:
+  enabled: false  # Install separately or use external
+  replicaCount: 1
+  persistence:
+    size: 10Gi
+
+# External Qdrant
+externalQdrant:
+  host: ""
+  port: 6334
+  apiKey: ""
+  existingSecret: ""
+  existingSecretAPIKeyKey: qdrant-api-key
+
+# ClickHouse configuration (for analytics)
+clickhouse:
+  enabled: false  # Install separately or use external
+
+# External ClickHouse
+externalClickhouse:
+  host: ""
+  port: 9000
+  database: adp
+  username: default
+  password: ""
+  existingSecret: ""
+  existingSecretPasswordKey: clickhouse-password
+
+# MCP server configuration
+mcp:
+  enabled: true
+  transport: sse  # sse or stdio
+
+# OPA policy configuration
+opa:
+  policyConfigMap: ""  # Name of ConfigMap containing policies
+  defaultPolicies: true  # Include default policies
+
+# Backstage integration
+backstage:
+  enabled: false
+  catalogURL: ""
+  syncInterval: 5m
+
+# GitHub App integration
+github:
+  enabled: false
+  appID: ""
+  privateKeySecret: ""
+  webhookSecret: ""
+
+# Extra environment variables
+extraEnv: []
+  # - name: EXTRA_VAR
+  #   value: "value"
+
+# Extra volumes
+extraVolumes: []
+  # - name: extra-config
+  #   configMap:
+  #     name: extra-config
+
+# Extra volume mounts
+extraVolumeMounts: []
+  # - name: extra-config
+  #   mountPath: /etc/adp/extra
+
+# Init containers
+initContainers: []
+
+# Sidecar containers
+sidecars: []

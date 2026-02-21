@@ -1,0 +1,152 @@
+name: 'ADP Verify'
+description: 'Verify ADP audit trail for commits in the push/PR'
+author: 'ADP Team'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  adp-url:
+    description: 'ADP server URL'
+    required: true
+  adp-token:
+    description: 'ADP API token for authentication'
+    required: true
+  fail-on-unverified:
+    description: 'Fail the workflow if commits are not verified'
+    required: false
+    default: 'true'
+  verify-all-commits:
+    description: 'Verify all commits in push, not just the head'
+    required: false
+    default: 'true'
+
+outputs:
+  verified:
+    description: 'Whether all commits are verified'
+    value: ${{ steps.verify.outputs.verified }}
+  total-commits:
+    description: 'Total number of commits checked'
+    value: ${{ steps.verify.outputs.total }}
+  verified-commits:
+    description: 'Number of verified commits'
+    value: ${{ steps.verify.outputs.verified_count }}
+  unverified-commits:
+    description: 'Number of unverified commits'
+    value: ${{ steps.verify.outputs.unverified_count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Verify commits
+      id: verify
+      shell: bash
+      env:
+        ADP_URL: ${{ inputs.adp-url }}
+        ADP_TOKEN: ${{ inputs.adp-token }}
+        FAIL_ON_UNVERIFIED: ${{ inputs.fail-on-unverified }}
+        VERIFY_ALL_COMMITS: ${{ inputs.verify-all-commits }}
+      run: |
+        set -e
+
+        echo "::group::ADP Verification"
+        echo "ADP URL: $ADP_URL"
+
+        # Determine commits to verify
+        if [ "$VERIFY_ALL_COMMITS" = "true" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+          COMMITS=$(git rev-list ${{ github.event.before }}..${{ github.sha }})
+        else
+          COMMITS="${{ github.sha }}"
+        fi
+
+        if [ -z "$COMMITS" ]; then
+          echo "No commits to verify"
+          echo "verified=true" >> $GITHUB_OUTPUT
+          echo "total=0" >> $GITHUB_OUTPUT
+          echo "verified_count=0" >> $GITHUB_OUTPUT
+          echo "unverified_count=0" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        TOTAL=0
+        VERIFIED_COUNT=0
+        UNVERIFIED_COUNT=0
+        FAILED=false
+        UNVERIFIED_LIST=""
+
+        for commit in $COMMITS; do
+          TOTAL=$((TOTAL + 1))
+          COMMIT_SHORT="${commit:0:8}"
+
+          echo "Checking commit: $COMMIT_SHORT"
+
+          RESPONSE=$(curl -sf \
+            --max-time 10 \
+            -X POST "$ADP_URL/v1/commits/verify" \
+            -H "Authorization: Bearer $ADP_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"commit_sha\": \"$commit\"}" 2>/dev/null) || {
+            echo "::warning::Failed to contact ADP server for commit $COMMIT_SHORT"
+            UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1))
+            UNVERIFIED_LIST="$UNVERIFIED_LIST $commit"
+            FAILED=true
+            continue
+          }
+
+          VERIFIED=$(echo "$RESPONSE" | jq -r '.verified // false')
+
+          if [ "$VERIFIED" = "true" ]; then
+            echo "  ✅ $COMMIT_SHORT: Verified"
+            VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+          else
+            REASON=$(echo "$RESPONSE" | jq -r '.reason // "No audit trail found"')
+            echo "  ❌ $COMMIT_SHORT: Not verified - $REASON"
+            UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1))
+            UNVERIFIED_LIST="$UNVERIFIED_LIST $commit"
+            FAILED=true
+          fi
+        done
+
+        echo "::endgroup::"
+
+        # Output summary
+        echo "## ADP Verification Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Total Commits | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+        echo "| Verified | $VERIFIED_COUNT |" >> $GITHUB_STEP_SUMMARY
+        echo "| Unverified | $UNVERIFIED_COUNT |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ "$FAILED" = "true" ]; then
+          echo "### ❌ Unverified Commits" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The following commits are missing ADP audit trails:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for commit in $UNVERIFIED_LIST; do
+            MSG=$(git log --format="%s" -n 1 "$commit" 2>/dev/null || echo "Unknown")
+            echo "- \`${commit:0:8}\`: $MSG" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**To fix:** Ensure commits are made with an active ADP session." >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### ✅ All Commits Verified" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All commits have valid ADP audit trails." >> $GITHUB_STEP_SUMMARY
+        fi
+
+        # Set outputs
+        echo "total=$TOTAL" >> $GITHUB_OUTPUT
+        echo "verified_count=$VERIFIED_COUNT" >> $GITHUB_OUTPUT
+        echo "unverified_count=$UNVERIFIED_COUNT" >> $GITHUB_OUTPUT
+
+        if [ "$FAILED" = "true" ]; then
+          echo "verified=false" >> $GITHUB_OUTPUT
+          if [ "$FAIL_ON_UNVERIFIED" = "true" ]; then
+            echo "::error::$UNVERIFIED_COUNT commit(s) missing ADP audit trail"
+            exit 1
+          fi
+        else
+          echo "verified=true" >> $GITHUB_OUTPUT
+        fi

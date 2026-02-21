@@ -1,0 +1,310 @@
+groups:
+  - name: adp-governance
+    interval: 30s
+    rules:
+      # ============================================
+      # Escalation Alerts
+      # ============================================
+
+      # High escalation volume
+      - alert: HighEscalationRate
+        expr: rate(adp_escalations_total[1h]) > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Escalation rate exceeds threshold"
+          description: "{{ $value | printf \"%.2f\" }} escalations/hour - review policy strictness"
+          runbook_url: "https://docs.adp.io/runbooks/high-escalation-rate"
+
+      # Escalation queue building up
+      - alert: EscalationQueueBacklog
+        expr: adp_escalations_pending > 20
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Escalation queue has significant backlog"
+          description: "{{ $value }} pending escalations require attention"
+          runbook_url: "https://docs.adp.io/runbooks/escalation-backlog"
+
+      # Escalations not being resolved
+      - alert: EscalationsStale
+        expr: adp_escalations_pending > 0 and changes(adp_escalations_total[2h]) == 0
+        for: 2h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Escalations not being processed"
+          description: "Escalations pending for over 2 hours with no resolution activity"
+          runbook_url: "https://docs.adp.io/runbooks/stale-escalations"
+
+      # ============================================
+      # Policy Effectiveness Alerts
+      # ============================================
+
+      # Policy false positive spike
+      - alert: PolicyFalsePositiveSpike
+        expr: |
+          (
+            sum(increase(adp_escalations_total{status="approved"}[1h]))
+            /
+            sum(increase(adp_escalations_total[1h]))
+          ) > 0.8
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "High false positive rate on policy denials"
+          description: "80%+ of escalations are being approved - policies may be too strict"
+          runbook_url: "https://docs.adp.io/runbooks/false-positives"
+
+      # Policy with very high denial rate
+      - alert: PolicyHighDenialRate
+        expr: |
+          (
+            sum by (policy) (rate(adp_policy_evaluations_total{result="denied"}[1h]))
+            /
+            sum by (policy) (rate(adp_policy_evaluations_total[1h]))
+          ) > 0.5
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Policy {{ $labels.policy }} has high denial rate"
+          description: "Policy {{ $labels.policy }} is denying over 50% of requests"
+          runbook_url: "https://docs.adp.io/runbooks/policy-tuning"
+
+      # Policy evaluation taking too long
+      - alert: PolicyEvaluationSlow
+        expr: histogram_quantile(0.99, rate(adp_policy_evaluation_duration_seconds_bucket[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Policy evaluation latency exceeds 100ms p99"
+          description: "Policy evaluation p99 latency is {{ $value | printf \"%.3f\" }}s"
+          runbook_url: "https://docs.adp.io/runbooks/policy-performance"
+
+      # ============================================
+      # Decision Quality Alerts
+      # ============================================
+
+      # Low confidence decisions
+      - alert: LowConfidenceDecisions
+        expr: |
+          (
+            rate(adp_decisions_low_confidence_total[30m])
+            /
+            sum(rate(adp_decisions_total[30m]))
+          ) > 0.2
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of low-confidence decisions"
+          description: "20%+ of decisions have confidence < 0.7"
+          runbook_url: "https://docs.adp.io/runbooks/low-confidence"
+
+      # Decision quality degradation
+      - alert: DecisionConfidenceDrop
+        expr: |
+          avg(histogram_quantile(0.5, rate(adp_decision_confidence_score_bucket[1h])))
+          <
+          avg(histogram_quantile(0.5, rate(adp_decision_confidence_score_bucket[1h] offset 24h))) * 0.9
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Decision confidence has dropped 10%+ from yesterday"
+          description: "Median confidence score has declined significantly"
+
+      # ============================================
+      # Audit & Compliance Alerts
+      # ============================================
+
+      # Audit trail gaps
+      - alert: AuditTrailIncomplete
+        expr: adp_audit_trail_completeness_ratio < 0.999
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Audit trail completeness below 99.9%"
+          description: "{{ $value | printf \"%.2f\" }}% of commits have complete audit trails"
+          runbook_url: "https://docs.adp.io/runbooks/audit-gaps"
+
+      # Commits without verification
+      - alert: UnverifiedCommits
+        expr: increase(adp_commits_rejected_total{reason="no_audit_trail"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Commits attempted without audit trail"
+          description: "{{ $value }} commits rejected for missing audit records"
+          runbook_url: "https://docs.adp.io/runbooks/unverified-commits"
+
+      # Sensitive path access
+      - alert: SensitivePathAccess
+        expr: increase(adp_sensitive_path_access_total[1h]) > 10
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Elevated sensitive path access"
+          description: "{{ $value }} accesses to sensitive paths in the last hour"
+
+      # Off-hours production activity
+      - alert: OffHoursProductionActivity
+        expr: increase(adp_off_hours_activity_total{environment="production"}[1h]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "Agent activity in production during off-hours"
+          description: "{{ $value }} actions taken in production outside business hours"
+
+      # ============================================
+      # Context & Performance Alerts
+      # ============================================
+
+      # Context latency degradation
+      - alert: ContextLatencyHigh
+        expr: histogram_quantile(0.99, rate(adp_context_retrieval_duration_seconds_bucket[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Context retrieval latency exceeds 500ms p99"
+          description: "Context retrieval p99 latency is {{ $value | printf \"%.3f\" }}s"
+          runbook_url: "https://docs.adp.io/runbooks/context-latency"
+
+      # Context cache hit rate low
+      - alert: ContextCacheHitRateLow
+        expr: |
+          rate(adp_context_cache_hits_total[1h])
+          /
+          (rate(adp_context_cache_hits_total[1h]) + rate(adp_context_cache_misses_total[1h]))
+          < 0.5
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Context cache hit rate below 50%"
+          description: "Cache hit rate is {{ $value | printf \"%.2f\" }}% - consider cache warming"
+
+      # ============================================
+      # API & Infrastructure Alerts
+      # ============================================
+
+      # API error rate
+      - alert: APIErrorRateHigh
+        expr: |
+          sum(rate(adp_api_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(adp_api_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API error rate exceeds 5%"
+          description: "{{ $value | printf \"%.2f\" }}% of API requests returning 5xx errors"
+          runbook_url: "https://docs.adp.io/runbooks/api-errors"
+
+      # API latency
+      - alert: APILatencyHigh
+        expr: histogram_quantile(0.99, rate(adp_api_request_duration_seconds_bucket[5m])) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API latency exceeds 2s p99"
+          description: "API p99 latency is {{ $value | printf \"%.3f\" }}s"
+          runbook_url: "https://docs.adp.io/runbooks/api-latency"
+
+      # No active sessions (possible outage)
+      - alert: NoActiveSessions
+        expr: adp_sessions_active == 0 and hour() >= 9 and hour() < 18 and day_of_week() >= 1 and day_of_week() <= 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No active sessions during business hours"
+          description: "Zero active sessions detected during expected usage period"
+
+      # ============================================
+      # Session Alerts
+      # ============================================
+
+      # Session duration too long
+      - alert: SessionDurationLong
+        expr: histogram_quantile(0.99, rate(adp_session_duration_seconds_bucket[1h])) > 14400
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Some sessions running for over 4 hours"
+          description: "p99 session duration is {{ $value | printf \"%.0f\" }} seconds"
+
+      # Trust level distribution anomaly
+      - alert: TrustLevelAnomaly
+        expr: |
+          sum(rate(adp_sessions_total{trust_level="5"}[1h]))
+          /
+          sum(rate(adp_sessions_total[1h]))
+          > 0.3
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Unusually high proportion of admin-level sessions"
+          description: "{{ $value | printf \"%.2f\" }}% of sessions are at trust level 5"
+
+  # ============================================
+  # Recording Rules for Efficiency
+  # ============================================
+  - name: adp-recording-rules
+    interval: 1m
+    rules:
+      # Escalation approval rate (5m window)
+      - record: adp:escalation_approval_rate:5m
+        expr: |
+          sum(rate(adp_escalations_total{status="approved"}[5m]))
+          /
+          sum(rate(adp_escalations_total{status=~"approved|rejected"}[5m]))
+
+      # Policy denial rate by policy (5m window)
+      - record: adp:policy_denial_rate:5m
+        expr: |
+          sum by (policy) (rate(adp_policy_evaluations_total{result="denied"}[5m]))
+          /
+          sum by (policy) (rate(adp_policy_evaluations_total[5m]))
+
+      # Average decision confidence (5m window)
+      - record: adp:decision_confidence_avg:5m
+        expr: |
+          sum(rate(adp_decision_confidence_score_sum[5m]))
+          /
+          sum(rate(adp_decision_confidence_score_count[5m]))
+
+      # Context cache hit rate (5m window)
+      - record: adp:context_cache_hit_rate:5m
+        expr: |
+          rate(adp_context_cache_hits_total[5m])
+          /
+          (rate(adp_context_cache_hits_total[5m]) + rate(adp_context_cache_misses_total[5m]))
+
+      # API error rate by endpoint (5m window)
+      - record: adp:api_error_rate:5m
+        expr: |
+          sum by (endpoint) (rate(adp_api_requests_total{status=~"5.."}[5m]))
+          /
+          sum by (endpoint) (rate(adp_api_requests_total[5m]))
+
+      # Sessions per hour
+      - record: adp:sessions_per_hour
+        expr: sum(increase(adp_sessions_total[1h]))
+
+      # Decisions per hour
+      - record: adp:decisions_per_hour
+        expr: sum(increase(adp_decisions_total[1h]))

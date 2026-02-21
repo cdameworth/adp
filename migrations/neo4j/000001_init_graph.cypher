@@ -1,0 +1,3 @@
+CREATE CONSTRAINT session_id FOR (s:Session) REQUIRE s.id IS UNIQUE;
+CREATE CONSTRAINT decision_id FOR (d:Decision) REQUIRE d.id IS UNIQUE;
+CREATE CONSTRAINT service_id FOR (s:Service) REQUIRE s.id IS UNIQUE;

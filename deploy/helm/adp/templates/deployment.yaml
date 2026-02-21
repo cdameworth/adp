@@ -1,0 +1,238 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "adp.fullname" . }}
+  labels:
+    {{- include "adp.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "adp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "adp.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "adp.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "adp.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.adp.server.port }}
+              protocol: TCP
+            {{- if .Values.adp.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.adp.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            # Server configuration
+            - name: SERVER_PORT
+              value: {{ .Values.adp.server.port | quote }}
+            - name: SERVER_READ_TIMEOUT
+              value: {{ .Values.adp.server.readTimeout | quote }}
+            - name: SERVER_WRITE_TIMEOUT
+              value: {{ .Values.adp.server.writeTimeout | quote }}
+            - name: SERVER_SHUTDOWN_TIMEOUT
+              value: {{ .Values.adp.server.shutdownTimeout | quote }}
+
+            # PostgreSQL
+            - name: DATABASE_POSTGRES_HOST
+              value: {{ include "adp.postgresql.host" . | quote }}
+            - name: DATABASE_POSTGRES_PORT
+              value: {{ include "adp.postgresql.port" . | quote }}
+            - name: DATABASE_POSTGRES_DATABASE
+              value: {{ include "adp.postgresql.database" . | quote }}
+            - name: DATABASE_POSTGRES_USER
+              value: {{ .Values.externalDatabase.username | default "postgres" | quote }}
+            - name: DATABASE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "adp.databaseSecretName" . }}
+                  key: {{ .Values.externalDatabase.existingSecretPasswordKey | default "postgres-password" }}
+
+            # Redis
+            - name: CACHE_REDIS_HOST
+              value: {{ include "adp.redis.host" . | quote }}
+            - name: CACHE_REDIS_PORT
+              value: {{ include "adp.redis.port" . | quote }}
+            - name: CACHE_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "adp.redisSecretName" . }}
+                  key: {{ .Values.externalRedis.existingSecretPasswordKey | default "redis-password" }}
+            - name: CACHE_REDIS_MODE
+              value: {{ .Values.externalRedis.mode | default "standalone" | quote }}
+
+            # Neo4j
+            - name: DATABASE_NEO4J_URI
+              value: {{ include "adp.neo4j.uri" . | quote }}
+            - name: DATABASE_NEO4J_USER
+              value: {{ .Values.externalNeo4j.username | default "neo4j" | quote }}
+            - name: DATABASE_NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "adp.neo4jSecretName" . }}
+                  key: {{ .Values.externalNeo4j.existingSecretPasswordKey | default "neo4j-password" }}
+
+            {{- if .Values.externalQdrant.host }}
+            # Qdrant
+            - name: DATABASE_QDRANT_HOST
+              value: {{ .Values.externalQdrant.host | quote }}
+            - name: DATABASE_QDRANT_PORT
+              value: {{ .Values.externalQdrant.port | default 6334 | quote }}
+            {{- if .Values.externalQdrant.existingSecret }}
+            - name: DATABASE_QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalQdrant.existingSecret }}
+                  key: {{ .Values.externalQdrant.existingSecretAPIKeyKey | default "qdrant-api-key" }}
+            {{- end }}
+            {{- end }}
+
+            {{- if .Values.externalClickhouse.host }}
+            # ClickHouse
+            - name: DATABASE_CLICKHOUSE_HOST
+              value: {{ .Values.externalClickhouse.host | quote }}
+            - name: DATABASE_CLICKHOUSE_PORT
+              value: {{ .Values.externalClickhouse.port | default 9000 | quote }}
+            - name: DATABASE_CLICKHOUSE_DATABASE
+              value: {{ .Values.externalClickhouse.database | default "adp" | quote }}
+            {{- if .Values.externalClickhouse.existingSecret }}
+            - name: DATABASE_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalClickhouse.existingSecret }}
+                  key: {{ .Values.externalClickhouse.existingSecretPasswordKey | default "clickhouse-password" }}
+            {{- end }}
+            {{- end }}
+
+            # Authentication
+            {{- if .Values.adp.auth.enabled }}
+            - name: AUTH_JWKS_URL
+              value: {{ .Values.adp.auth.jwksURL | quote }}
+            - name: AUTH_ISSUER
+              value: {{ .Values.adp.auth.issuer | quote }}
+            - name: AUTH_AUDIENCE
+              value: {{ .Values.adp.auth.audience | quote }}
+            {{- end }}
+
+            # Rate limiting
+            - name: RATE_LIMIT_ENABLED
+              value: {{ .Values.adp.rateLimit.enabled | quote }}
+            - name: RATE_LIMIT_REQUESTS_PER_MINUTE
+              value: {{ .Values.adp.rateLimit.requestsPerMinute | quote }}
+
+            # Logging
+            - name: LOG_LEVEL
+              value: {{ .Values.adp.logging.level | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.adp.logging.format | quote }}
+
+            # Tracing
+            {{- if .Values.adp.tracing.enabled }}
+            - name: TRACING_ENABLED
+              value: "true"
+            - name: TRACING_EXPORTER
+              value: {{ .Values.adp.tracing.exporter | quote }}
+            - name: TRACING_ENDPOINT
+              value: {{ .Values.adp.tracing.endpoint | quote }}
+            - name: TRACING_SAMPLE_RATE
+              value: {{ .Values.adp.tracing.sampleRate | quote }}
+            {{- end }}
+
+            # MCP
+            - name: MCP_ENABLED
+              value: {{ .Values.mcp.enabled | quote }}
+            - name: MCP_TRANSPORT
+              value: {{ .Values.mcp.transport | quote }}
+
+            # GitHub
+            {{- if .Values.github.enabled }}
+            - name: GITHUB_APP_ID
+              value: {{ .Values.github.appID | quote }}
+            {{- if .Values.github.privateKeySecret }}
+            - name: GITHUB_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.github.privateKeySecret }}
+                  key: private-key
+            {{- end }}
+            {{- if .Values.github.webhookSecret }}
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.github.webhookSecret }}
+                  key: webhook-secret
+            {{- end }}
+            {{- end }}
+
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.opa.policyConfigMap }}
+            - name: policies
+              mountPath: /etc/adp/policies
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.opa.policyConfigMap }}
+        - name: policies
+          configMap:
+            name: {{ .Values.opa.policyConfigMap }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

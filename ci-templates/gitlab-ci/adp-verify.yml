@@ -1,0 +1,131 @@
+# ADP GitLab CI Template
+#
+# Usage: Include this template in your .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'your-org/adp'
+#       ref: main
+#       file: '/ci-templates/gitlab-ci/adp-verify.yml'
+#
+#   variables:
+#     ADP_URL: https://adp.example.com
+#     # Set ADP_TOKEN in CI/CD Settings as a masked variable
+#
+# Or copy the jobs directly to your .gitlab-ci.yml
+
+.adp-verify:
+  image: alpine:3.19
+  before_script:
+    - apk add --no-cache curl jq git
+  script:
+    - |
+      set -e
+
+      echo "ADP Verification starting..."
+      echo "ADP URL: ${ADP_URL}"
+
+      # Determine commits to verify
+      if [ -n "$CI_COMMIT_BEFORE_SHA" ] && [ "$CI_COMMIT_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+        COMMITS=$(git rev-list ${CI_COMMIT_BEFORE_SHA}..${CI_COMMIT_SHA})
+      else
+        COMMITS="${CI_COMMIT_SHA}"
+      fi
+
+      if [ -z "$COMMITS" ]; then
+        echo "No commits to verify"
+        exit 0
+      fi
+
+      TOTAL=0
+      VERIFIED_COUNT=0
+      UNVERIFIED_COUNT=0
+      FAILED=false
+
+      for commit in $COMMITS; do
+        TOTAL=$((TOTAL + 1))
+        COMMIT_SHORT="${commit:0:8}"
+
+        echo "Checking commit: $COMMIT_SHORT"
+
+        RESPONSE=$(curl -sf \
+          --max-time 10 \
+          -X POST "${ADP_URL}/v1/commits/verify" \
+          -H "Authorization: Bearer ${ADP_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "{\"commit_sha\": \"$commit\"}" 2>/dev/null) || {
+          echo "  ⚠️  Failed to contact ADP server for commit $COMMIT_SHORT"
+          UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1))
+          FAILED=true
+          continue
+        }
+
+        VERIFIED=$(echo "$RESPONSE" | jq -r '.verified // false')
+
+        if [ "$VERIFIED" = "true" ]; then
+          echo "  ✅ Verified"
+          VERIFIED_COUNT=$((VERIFIED_COUNT + 1))
+        else
+          REASON=$(echo "$RESPONSE" | jq -r '.reason // "No audit trail found"')
+          echo "  ❌ Not verified - $REASON"
+          UNVERIFIED_COUNT=$((UNVERIFIED_COUNT + 1))
+          FAILED=true
+        fi
+      done
+
+      echo ""
+      echo "=== ADP Verification Summary ==="
+      echo "Total commits: $TOTAL"
+      echo "Verified: $VERIFIED_COUNT"
+      echo "Unverified: $UNVERIFIED_COUNT"
+
+      if [ "$FAILED" = "true" ]; then
+        echo ""
+        echo "❌ Some commits are missing ADP audit trails."
+        echo "   Ensure commits are made with an active ADP session."
+
+        if [ "${ADP_FAIL_ON_UNVERIFIED:-true}" = "true" ]; then
+          exit 1
+        else
+          echo "   (Continuing due to ADP_FAIL_ON_UNVERIFIED=false)"
+        fi
+      else
+        echo ""
+        echo "✅ All commits verified!"
+      fi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Job template for merge request pipelines
+adp-verify-mr:
+  extends: .adp-verify
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Job template for push pipelines
+adp-verify-push:
+  extends: .adp-verify
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      when: always
+
+# Combined job (use this in most cases)
+adp-verify:
+  extends: .adp-verify
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Optional: warning-only mode (doesn't fail pipeline)
+adp-verify-warn:
+  extends: .adp-verify
+  stage: test
+  variables:
+    ADP_FAIL_ON_UNVERIFIED: "false"
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"

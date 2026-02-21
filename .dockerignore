@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+coverage.out
+coverage.html
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Development files
+docker-compose*.yml
+.env*
+!.env.example
+Makefile
+
+# Helm chart
+deploy/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+azure-pipelines.yml
+
+# Web dashboard (built separately)
+web/node_modules/
+web/.next/
+web/out/
+
+# Backstage plugins (built separately)
+backstage-plugins/
+
+# Design docs
+ADP_design/

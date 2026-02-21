@@ -1,0 +1,162 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "adp.fullname" . }}-config
+  labels:
+    {{- include "adp.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      port: {{ .Values.adp.server.port }}
+      read_timeout: {{ .Values.adp.server.readTimeout }}
+      write_timeout: {{ .Values.adp.server.writeTimeout }}
+      shutdown_timeout: {{ .Values.adp.server.shutdownTimeout }}
+
+    auth:
+      enabled: {{ .Values.adp.auth.enabled }}
+      {{- if .Values.adp.auth.jwksURL }}
+      jwks_url: {{ .Values.adp.auth.jwksURL }}
+      {{- end }}
+      {{- if .Values.adp.auth.issuer }}
+      issuer: {{ .Values.adp.auth.issuer }}
+      {{- end }}
+      {{- if .Values.adp.auth.audience }}
+      audience: {{ .Values.adp.auth.audience }}
+      {{- end }}
+
+    {{- if .Values.adp.saml.enabled }}
+    saml:
+      enabled: true
+      root_url: {{ .Values.adp.saml.rootURL }}
+      idp_metadata_url: {{ .Values.adp.saml.idpMetadataURL }}
+      cert_file: {{ .Values.adp.saml.certFile }}
+      key_file: {{ .Values.adp.saml.keyFile }}
+    {{- end }}
+
+    rate_limit:
+      enabled: {{ .Values.adp.rateLimit.enabled }}
+      requests_per_minute: {{ .Values.adp.rateLimit.requestsPerMinute }}
+
+    logging:
+      level: {{ .Values.adp.logging.level }}
+      format: {{ .Values.adp.logging.format }}
+
+    tracing:
+      enabled: {{ .Values.adp.tracing.enabled }}
+      {{- if .Values.adp.tracing.enabled }}
+      exporter: {{ .Values.adp.tracing.exporter }}
+      endpoint: {{ .Values.adp.tracing.endpoint }}
+      sample_rate: {{ .Values.adp.tracing.sampleRate }}
+      {{- end }}
+
+    metrics:
+      enabled: {{ .Values.adp.metrics.enabled }}
+      port: {{ .Values.adp.metrics.port }}
+
+    mcp:
+      enabled: {{ .Values.mcp.enabled }}
+      transport: {{ .Values.mcp.transport }}
+
+    {{- if .Values.backstage.enabled }}
+    backstage:
+      enabled: true
+      catalog_url: {{ .Values.backstage.catalogURL }}
+      sync_interval: {{ .Values.backstage.syncInterval }}
+    {{- end }}
+
+---
+{{- if .Values.opa.defaultPolicies }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "adp.fullname" . }}-policies
+  labels:
+    {{- include "adp.labels" . | nindent 4 }}
+data:
+  default.rego: |
+    package adp.governance
+
+    import future.keywords.in
+
+    # Default deny
+    default allow = false
+
+    # Allow read operations for all trust levels
+    allow {
+        input.action.type == "read"
+    }
+
+    # Allow write operations for trust level >= 2 (Contributor)
+    allow {
+        input.action.type in ["create", "update"]
+        input.session.trust_level >= 2
+    }
+
+    # Allow delete operations for trust level >= 3 (Maintainer)
+    allow {
+        input.action.type == "delete"
+        input.session.trust_level >= 3
+    }
+
+    # Deny production deployments for trust level < 4
+    deny[msg] {
+        input.action.type == "deploy"
+        input.context.environment == "production"
+        input.session.trust_level < 4
+        msg := "Production deployments require Operator (4) or Admin (5) trust level"
+    }
+
+    # Deny off-hours production modifications
+    deny[msg] {
+        input.action.type in ["deploy", "delete", "update"]
+        input.context.environment == "production"
+        hour := time.clock(time.now_ns())[0]
+        hour >= 22
+        input.session.trust_level < 5
+        msg := "Production modifications after 10 PM require Admin (5) trust level"
+    }
+
+    deny[msg] {
+        input.action.type in ["deploy", "delete", "update"]
+        input.context.environment == "production"
+        hour := time.clock(time.now_ns())[0]
+        hour < 6
+        input.session.trust_level < 5
+        msg := "Production modifications before 6 AM require Admin (5) trust level"
+    }
+
+    # Limit blast radius based on trust level
+    deny[msg] {
+        input.action.type in ["create", "update", "delete"]
+        count(input.action.target_paths) > max_files[input.session.trust_level]
+        msg := sprintf("Operation affects %d files, exceeds limit of %d for trust level %d", [count(input.action.target_paths), max_files[input.session.trust_level], input.session.trust_level])
+    }
+
+    max_files[1] = 3   # Observer: 3 files
+    max_files[2] = 10  # Contributor: 10 files
+    max_files[3] = 25  # Maintainer: 25 files
+    max_files[4] = 50  # Operator: 50 files
+    max_files[5] = 100 # Admin: 100 files
+
+    # Require escalation for sensitive paths
+    requires_escalation[msg] {
+        input.action.type in ["create", "update", "delete"]
+        some path in input.action.target_paths
+        contains(path, ".env")
+        msg := "Modifications to .env files require approval"
+    }
+
+    requires_escalation[msg] {
+        input.action.type in ["create", "update", "delete"]
+        some path in input.action.target_paths
+        contains(path, "secrets")
+        msg := "Modifications to secrets require approval"
+    }
+
+    requires_escalation[msg] {
+        input.action.type in ["create", "update", "delete"]
+        some path in input.action.target_paths
+        contains(path, "credentials")
+        msg := "Modifications to credentials require approval"
+    }
+{{- end }}

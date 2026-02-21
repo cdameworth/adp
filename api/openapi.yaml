@@ -1,0 +1,2851 @@
+openapi: 3.1.0
+info:
+  title: Agent Developer Portal (ADP) API
+  version: 1.0.0-alpha
+  description: |
+    REST API for AI agent governance, audit trails, and documentation.
+    Supports both PostgreSQL and SQLite backends.
+
+    ## Overview
+
+    ADP provides two core capabilities for AI coding agents:
+
+    1. **Decision Audit Trail** -- every agent decision is logged with reasoning, confidence, and policy outcome.
+    2. **Documentation Engine** -- auto-generates session summaries, risk reports, and pattern analysis from decision records.
+
+    ## Response Formats
+
+    The REST API (`adp-server`, port 8080) uses envelope wrappers for all responses:
+
+    - **Single object**: `{"data": <object>}`
+    - **Created object** (201): `{"data": <object>}`
+    - **List**: `{"items": [...], "total": 10, "limit": 50, "offset": 0}`
+    - **Error**: `{"error": "message", "code": "bad_request", "details": null}`
+
+    ## Sidecar vs REST API
+
+    The commit endpoints (`/v1/commits/*`) exist in two places with **different response formats**:
+
+    - **REST API** (this spec, port 8080): Wraps responses in `{"data": {...}}` envelopes.
+    - **MCP HTTP sidecar** (port 8081): Returns top-level JSON without envelopes. Git hooks expect the sidecar format.
+
+    See the commit endpoint descriptions for details on both formats.
+
+    ## Authentication
+
+    ADP supports three authentication methods:
+
+    1. **Local JWT** (recommended): Register via `POST /v1/auth/register`, then login via `POST /v1/auth/login` to receive access and refresh tokens. Set `ADP_JWT_SECRET` to enable.
+    2. **API key**: Pass a shared key via `X-API-Key` header or `Authorization: Bearer <key>`. Set `ADP_API_KEY` to enable.
+    3. **External JWT (JWKS)**: Validate tokens against an external OIDC provider. Set `ADP_AUTH_JWKS_URL` to enable.
+
+    The first registered user is automatically granted the admin role.
+    In SQLite development mode without `ADP_JWT_SECRET`, authentication is optional.
+
+    ## Database Backends
+
+    - **PostgreSQL**: Production store. IDs are UUIDs internally.
+    - **SQLite**: Zero-config development store. Auto-migrated on startup. IDs are strings.
+
+    Both backends expose the same API surface through store interface abstraction.
+  contact:
+    name: ADP Project
+    url: https://github.com/adp/adp
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server (adp-server)
+  - url: http://localhost:8081
+    description: MCP HTTP sidecar (commit endpoints only, no envelope)
+
+tags:
+  - name: Sessions
+    description: Agent session lifecycle management
+  - name: Governance
+    description: Policy evaluation and approval workflows
+  - name: Audit
+    description: Decision logging and lineage tracking
+  - name: Commits
+    description: Git commit preparation, registration, and verification
+  - name: Policies
+    description: Policy definition management
+  - name: Services
+    description: Service registry and configuration
+  - name: System
+    description: Health checks and API metadata
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Sessions
+  # ---------------------------------------------------------------------------
+  /v1/sessions:
+    post:
+      operationId: createSession
+      summary: Create a new agent session
+      description: |
+        Starts a new agent session with the given tool, trust level, and scope.
+        Returns the full session object including computed `expires_at` based on `ttl_hours`.
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+            example:
+              organization_id: "550e8400-e29b-41d4-a716-446655440000"
+              user_id: "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+              tool: "claude-code"
+              trust_level: 3
+              capabilities: ["file_write", "shell_execute"]
+              service_scope: ["550e8400-e29b-41d4-a716-446655440001"]
+              ttl_hours: 4
+      responses:
+        "201":
+          description: Session created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "400":
+          description: Validation error (missing tool, invalid trust_level)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "tool is required"
+                code: "bad_request"
+                details: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listSessions
+      summary: List agent sessions
+      description: Returns a paginated list of sessions with optional filters.
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: tool
+          in: query
+          schema:
+            type: string
+          description: Filter by agent tool name
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, ended, expired]
+          description: Filter by session status
+        - name: min_trust_level
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+          description: Minimum trust level (inclusive)
+        - name: max_trust_level
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+          description: Maximum trust level (inclusive)
+        - name: organization_id
+          in: query
+          schema:
+            type: string
+          description: Filter by organization ID
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: Filter by user ID
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/sessions/{id}:
+    get:
+      operationId: getSession
+      summary: Get a session by ID
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updateSession
+      summary: Update a session
+      description: |
+        Partially updates a session. Only provided fields are modified.
+        Commonly used to adjust trust level or capabilities mid-session.
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSessionRequest"
+            example:
+              trust_level: 4
+              capabilities: ["file_write", "shell_execute", "network_access"]
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: endSession
+      summary: End a session
+      description: Terminates an active session. The session record is preserved for audit purposes.
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "Session ended successfully"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/sessions/{id}/heartbeat:
+    patch:
+      operationId: heartbeat
+      summary: Send a session heartbeat
+      description: |
+        Updates the session's `last_heartbeat` timestamp to signal the agent is still active.
+        No request body is required.
+      tags: [Sessions]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      session_id:
+                        type: string
+                      last_heartbeat:
+                        type: string
+                        format: date-time
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Governance
+  # ---------------------------------------------------------------------------
+  /v1/governance/check:
+    post:
+      operationId: checkAction
+      summary: Check whether an action is allowed
+      description: |
+        Evaluates an action against all active policies (builtin, database, and Rego).
+        Returns whether the action is allowed, requires approval, or is denied,
+        along with matched policy names and any warnings.
+      tags: [Governance]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckActionRequest"
+            example:
+              session_id: "abc-123"
+              trust_level: 2
+              action_type: "file_write"
+              target:
+                path: "/etc/nginx/nginx.conf"
+              context:
+                reason: "Update proxy settings"
+      responses:
+        "200":
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/CheckActionResult"
+              example:
+                data:
+                  allowed: false
+                  requires_approval: true
+                  denied_reasons:
+                    - "Sensitive file modification requires trust level >= 4"
+                  policy_names:
+                    - "sensitive_files"
+                  warnings:
+                    - "File is in production configuration path"
+                  restrictions: []
+        "400":
+          description: Missing session_id or action_type
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "session_id is required"
+                code: "bad_request"
+                details: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/governance/approvals:
+    post:
+      operationId: requestApproval
+      summary: Request human approval for a blocked action
+      description: |
+        Creates an escalation request when an action requires human approval.
+        The request includes the action details, reason, and priority.
+        Default priority is "normal". Requests expire based on escalation configuration.
+      tags: [Governance]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestApprovalRequest"
+            example:
+              session_id: "abc-123"
+              action: "modify /etc/nginx/nginx.conf"
+              action_type: "file_write"
+              target:
+                path: "/etc/nginx/nginx.conf"
+              reason: "Need to update proxy timeout settings for performance improvement"
+              policy_names:
+                - "sensitive_files"
+              priority: "high"
+      responses:
+        "201":
+          description: Approval request created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/EscalationRequest"
+        "400":
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listApprovals
+      summary: List approval requests
+      description: Returns a paginated list of approval requests with optional filters.
+      tags: [Governance]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: session_id
+          in: query
+          schema:
+            type: string
+          description: Filter by session ID
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, denied, expired]
+          description: Filter by approval status
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [low, normal, high, critical]
+          description: Filter by priority level
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of approval requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/governance/approvals/pending:
+    get:
+      operationId: listPendingApprovals
+      summary: List pending approval requests
+      description: |
+        Convenience endpoint that returns only approval requests with status "pending".
+        Equivalent to `GET /v1/governance/approvals?status=pending`.
+      tags: [Governance]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of pending approval requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/governance/approvals/{id}:
+    get:
+      operationId: getApproval
+      summary: Get an approval request by ID
+      tags: [Governance]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: Approval request details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/EscalationRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: resolveApproval
+      summary: Resolve an approval request
+      description: |
+        Approves or denies a pending escalation request. Sets the approver comment
+        and transitions the request to "approved" or "denied" status.
+      tags: [Governance]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveApprovalRequest"
+            example:
+              approved: true
+              comment: "Approved -- timeout change is safe for production"
+      responses:
+        "200":
+          description: Approval resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/EscalationRequest"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Audit -- Decisions
+  # ---------------------------------------------------------------------------
+  /v1/audit/decisions:
+    post:
+      operationId: logDecision
+      summary: Log an agent decision
+      description: |
+        Records a decision made by an AI agent, including the action taken,
+        reasoning, confidence score, and any alternatives considered.
+        Optionally includes the policy evaluation result from a prior `checkAction` call.
+      tags: [Audit]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogDecisionRequest"
+            example:
+              session_id: "abc-123"
+              decision_type: "file_modification"
+              action: "Update nginx.conf proxy_pass directive"
+              target:
+                path: "/etc/nginx/nginx.conf"
+                line: 42
+              reasoning:
+                rationale: "Current timeout causes 504 errors under load"
+                evidence: "Error logs show 12 timeouts in last hour"
+              confidence: 0.92
+              alternatives:
+                - action: "Increase worker connections instead"
+                  reason: "Could help but doesn't address root cause"
+                  confidence: 0.45
+              policy_result:
+                allowed: true
+                denied_reasons: []
+                policy_names: ["default"]
+      responses:
+        "201":
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/DecisionRecord"
+        "400":
+          description: Missing session_id, decision_type, or action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listDecisions
+      summary: List decision records
+      description: Returns a paginated list of decision records with optional filters.
+      tags: [Audit]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: session_id
+          in: query
+          schema:
+            type: string
+          description: Filter by session ID
+        - name: decision_type
+          in: query
+          schema:
+            type: string
+          description: Filter by decision type
+        - name: status
+          in: query
+          schema:
+            type: string
+          description: Filter by decision status
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of decision records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/audit/decisions/{id}:
+    get:
+      operationId: getDecision
+      summary: Get a decision record by ID
+      tags: [Audit]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/DecisionId"
+      responses:
+        "200":
+          description: Decision record details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/DecisionRecord"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/audit/decisions/{id}/lineage:
+    get:
+      operationId: getDecisionLineage
+      summary: Get decision lineage
+      description: |
+        Returns the chain of related decisions leading to and from the specified
+        decision. Useful for understanding the reasoning path an agent followed.
+      tags: [Audit]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/DecisionId"
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+          description: Maximum depth of lineage traversal
+      responses:
+        "200":
+          description: Array of related decision records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DecisionRecord"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Commits
+  # ---------------------------------------------------------------------------
+  /v1/commits/prepare:
+    post:
+      operationId: prepareCommit
+      summary: Prepare a commit for policy evaluation
+      description: |
+        Evaluates staged files against active policies and returns a commit token
+        if approved. The commit token must be passed to `registerCommit` after
+        the git commit succeeds.
+
+        **Two response formats exist for this endpoint:**
+
+        - **REST API** (`adp-server`, port 8080): Returns `{"data": {"commit_token": "...", "approved": true, "reason": "..."}}`.
+        - **MCP HTTP sidecar** (`adp-mcp`, port 8081): Returns `{"commit_token": "...", "approved": true, "reason": "..."}` (no envelope). Git hooks expect this format.
+
+        This specification documents the REST API envelope format.
+      tags: [Commits]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrepareCommitRequest"
+            example:
+              session_id: "abc-123"
+              files:
+                - "internal/api/handlers/sessions.go"
+                - "internal/api/handlers/sessions_test.go"
+              message: "feat(sessions): add TTL validation"
+      responses:
+        "201":
+          description: Commit prepared and evaluated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PrepareCommitResult"
+              example:
+                data:
+                  commit_token: "ct_a1b2c3d4e5f6"
+                  approved: true
+                  reason: "Automatic approval"
+        "400":
+          description: Missing session_id or files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "session_id is required"
+                code: "bad_request"
+                details: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commits/register:
+    post:
+      operationId: registerCommit
+      summary: Register a completed commit
+      description: |
+        Associates a git commit SHA with a previously prepared commit token.
+        Called by the `post-commit` hook after `git commit` succeeds.
+
+        **Two response formats exist for this endpoint:**
+
+        - **REST API** (port 8080): Returns `{"data": <CommitRecord>}`.
+        - **MCP HTTP sidecar** (port 8081): Returns `{"status": "...", "commit_sha": "..."}` (no envelope).
+      tags: [Commits]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterCommitRequest"
+            example:
+              commit_token: "ct_a1b2c3d4e5f6"
+              commit_sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      responses:
+        "200":
+          description: Commit registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/CommitRecord"
+        "400":
+          description: Missing commit_token or commit_sha
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Commit token not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Commit token not found"
+                code: "not_found"
+                details: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/commits/verify:
+    post:
+      operationId: verifyCommit
+      summary: Verify a commit has a complete audit trail
+      description: |
+        Checks whether a commit SHA has a valid audit trail (was prepared and
+        registered through ADP). Called by the `pre-push` hook to ensure all
+        commits being pushed were properly tracked.
+
+        **Two response formats exist for this endpoint:**
+
+        - **REST API** (port 8080): Returns `{"data": {"verified": true, "commit_sha": "...", "session_id": "...", "verified_at": "..."}}`.
+        - **MCP HTTP sidecar** (port 8081): Returns `{"verified": true, "commit_sha": "..."}` (no envelope).
+
+        **Backend note:** SQLite `IsCommitVerified` accepts both "committed" and
+        "verified" status. PostgreSQL has a separate `Verify()` method that sets
+        a `verified_at` timestamp.
+      tags: [Commits]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyCommitRequest"
+            example:
+              commit_sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      responses:
+        "200":
+          description: Commit verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/VerifyCommitResult"
+              example:
+                data:
+                  verified: true
+                  commit_sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+                  session_id: "abc-123"
+                  verified_at: "2026-02-20T14:30:00Z"
+        "400":
+          description: Missing commit_sha
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Policies
+  # ---------------------------------------------------------------------------
+  /v1/policies:
+    post:
+      operationId: createPolicy
+      summary: Create a policy definition
+      description: |
+        Creates a new policy definition. Policies are evaluated in priority order
+        during `checkAction` calls. Three policy types are supported:
+
+        - **builtin**: Hardcoded evaluators (sensitive files, blast radius, off-hours, cost limits, migration approval, rate limiting).
+        - **rego**: Custom OPA/Rego policies evaluated at runtime.
+        - **custom**: Database-stored policies with JSON configuration.
+      tags: [Policies]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+            example:
+              name: "no-secrets-in-commits"
+              description: "Prevent committing files that may contain secrets"
+              category: "security"
+              enabled: true
+              priority: 100
+              policy_type: "builtin"
+              builtin_name: "sensitive_files"
+              min_trust_level: 1
+              tags: ["security", "secrets"]
+      responses:
+        "201":
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PolicyDefinition"
+        "400":
+          description: Missing required fields (name, category)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Policy with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "policy with name 'no-secrets-in-commits' already exists"
+                code: "conflict"
+                details: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listPolicies
+      summary: List policy definitions
+      description: Returns a paginated list of policy definitions with optional filters.
+      tags: [Policies]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by policy category (e.g., security, compliance, operational)
+        - name: policy_type
+          in: query
+          schema:
+            type: string
+            enum: [builtin, rego, custom]
+          description: Filter by policy type
+        - name: enabled
+          in: query
+          schema:
+            type: boolean
+          description: Filter by enabled/disabled status
+        - name: tags
+          in: query
+          schema:
+            type: string
+          description: Filter by tag (single tag value)
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of policy definitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies/{id}:
+    get:
+      operationId: getPolicy
+      summary: Get a policy definition by ID
+      description: Returns the policy definition including trigger statistics (trigger count, last triggered time).
+      tags: [Policies]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: Policy definition details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PolicyDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updatePolicy
+      summary: Update a policy definition
+      description: Partially updates a policy definition. Only provided fields are modified.
+      tags: [Policies]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePolicyRequest"
+            example:
+              priority: 200
+              min_trust_level: 3
+              tags: ["security", "secrets", "high-priority"]
+      responses:
+        "200":
+          description: Updated policy definition
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PolicyDefinition"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Conflict (duplicate name)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: deletePolicy
+      summary: Delete a policy definition
+      tags: [Policies]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "204":
+          description: Policy deleted (no content)
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/policies/{id}/toggle:
+    patch:
+      operationId: togglePolicyEnabled
+      summary: Toggle a policy's enabled state
+      description: |
+        Flips the `enabled` flag on a policy definition. If the policy is
+        currently enabled it becomes disabled, and vice versa.
+      tags: [Policies]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: Policy with toggled enabled state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PolicyDefinition"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Services
+  # ---------------------------------------------------------------------------
+  /v1/services:
+    post:
+      operationId: createService
+      summary: Create a service definition
+      description: |
+        Registers a new service in the ADP service registry. Services define
+        agent constraints, context token budgets, and escalation configuration.
+      tags: [Services]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateServiceRequest"
+            example:
+              organization_id: "550e8400-e29b-41d4-a716-446655440000"
+              name: "payment-service"
+              description: "Core payment processing service"
+              tier: "critical"
+              agent_constraints:
+                - type: "file_restriction"
+                  description: "No direct database migrations"
+                  severity: "high"
+                  pattern: "migrations/*.sql"
+              context_config:
+                essential_token_budget: 4000
+                task_relevant_token_budget: 12000
+                supporting_token_budget: 8000
+                priority_files: ["README.md", "ARCHITECTURE.md"]
+              escalation_config:
+                default_approvers: ["lead@example.com"]
+                timeout_minutes: 30
+                auto_approve: false
+                notify_on_escalate: true
+      responses:
+        "201":
+          description: Service created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceResponse"
+        "400":
+          description: Missing required fields (name)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listServices
+      summary: List services
+      description: Returns a paginated list of registered services.
+      tags: [Services]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: tier
+          in: query
+          schema:
+            type: string
+          description: Filter by service tier (e.g., critical, standard, internal)
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Filter by name (substring match)
+        - name: organization_id
+          in: query
+          schema:
+            type: string
+          description: Filter by organization ID
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated list of services
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/services/{id}:
+    get:
+      operationId: getService
+      summary: Get a service by ID
+      tags: [Services]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ServiceId"
+      responses:
+        "200":
+          description: Service details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    patch:
+      operationId: updateService
+      summary: Update a service
+      description: Partially updates a service definition. Only provided fields are modified.
+      tags: [Services]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ServiceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServiceRequest"
+      responses:
+        "200":
+          description: Updated service
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: deleteService
+      summary: Delete a service
+      tags: [Services]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ServiceId"
+      responses:
+        "200":
+          description: Service deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "Service deleted successfully"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # System
+  # ---------------------------------------------------------------------------
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      description: |
+        Returns server health status. No authentication required.
+        Available on both the REST API (port 8080) and the MCP sidecar (port 8081).
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /ready:
+    get:
+      operationId: readinessCheck
+      summary: Readiness probe
+      description: |
+        Returns whether the server is ready to accept requests.
+        Checks database and cache connectivity. No authentication required.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: Server is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ready"
+                  checks:
+                    type: object
+                    properties:
+                      database:
+                        type: string
+                        example: "ok"
+                      cache:
+                        type: string
+                        example: "ok"
+
+  # ---------------------------------------------------------------------------
+  # Auth Endpoints
+  # ---------------------------------------------------------------------------
+  /v1/auth/register:
+    post:
+      operationId: register
+      summary: Register a new user account
+      description: |
+        Creates a new user account. The first registered user is automatically
+        granted the admin role. Subsequent registrations require either open
+        registration (ADP_OPEN_REGISTRATION=true) or an authenticated admin.
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid input (missing fields, weak password)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Registration disabled and requester is not admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/auth/login:
+    post:
+      operationId: login
+      summary: Authenticate with email and password
+      description: Returns a JWT access token and refresh token on success.
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/auth/refresh:
+    post:
+      operationId: refreshToken
+      summary: Exchange a refresh token for a new token pair
+      description: Validates the refresh token and returns new access + refresh tokens.
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshTokenRequest"
+      responses:
+        "200":
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/auth/me:
+    get:
+      operationId: getProfile
+      summary: Get current user profile
+      description: Returns the authenticated user's profile.
+      tags: [Auth]
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/UserProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    patch:
+      operationId: updateProfile
+      summary: Update current user profile
+      description: Updates the authenticated user's name.
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: New display name
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/UserProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ---------------------------------------------------------------------------
+  # Admin Endpoints
+  # ---------------------------------------------------------------------------
+  /v1/admin/users:
+    get:
+      operationId: listUsers
+      summary: List all users (admin only)
+      description: Returns a paginated list of all user accounts. Requires admin role.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /v1/admin/users/{id}:
+    get:
+      operationId: getUser
+      summary: Get a user by ID (admin only)
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: User details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/UserProfile"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateUser
+      summary: Update a user's role, status, or name (admin only)
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: User updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/UserProfile"
+        "400":
+          description: Invalid role or status value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: disableUser
+      summary: Disable a user account (admin only)
+      description: Soft-deletes the user by setting status to disabled. Cannot disable your own account.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: User disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "User disabled"
+        "400":
+          description: Cannot disable own account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/info:
+    get:
+      operationId: getApiInfo
+      summary: API version and endpoint info
+      description: Returns API metadata including version and available endpoint groups.
+      tags: [System]
+      security: []
+      responses:
+        "200":
+          description: API information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    example: "ADP API"
+                  version:
+                    type: string
+                    example: "1.0.0"
+                  endpoints:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    example:
+                      sessions: "/v1/sessions"
+                      governance: "/v1/governance"
+                      audit: "/v1/audit"
+                      services: "/v1/services"
+                      context: "/v1/context"
+
+# =============================================================================
+# Components
+# =============================================================================
+components:
+
+  # ---------------------------------------------------------------------------
+  # Security Schemes
+  # ---------------------------------------------------------------------------
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT authentication via locally-generated tokens (POST /v1/auth/login)
+        or external JWKS provider. Required in production (PostgreSQL mode).
+        Optional in SQLite development mode.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Shared API key authentication. Set via ADP_API_KEY environment variable.
+
+  # ---------------------------------------------------------------------------
+  # Reusable Parameters
+  # ---------------------------------------------------------------------------
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Session ID
+
+    DecisionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Decision record ID
+
+    ApprovalId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Approval (escalation) request ID
+
+    PolicyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Policy definition ID
+
+    ServiceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Service ID
+
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: User ID
+
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 500
+      description: Maximum number of items to return
+
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+      description: Number of items to skip for pagination
+
+  # ---------------------------------------------------------------------------
+  # Reusable Responses
+  # ---------------------------------------------------------------------------
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "not found"
+            code: "not_found"
+            details: null
+
+    Unauthorized:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "authentication required"
+            code: "unauthorized"
+            details: null
+
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "insufficient permissions"
+            code: "forbidden"
+            details: null
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "internal server error"
+            code: "internal_error"
+            details: null
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Common
+    # -------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+          enum:
+            - bad_request
+            - not_found
+            - unauthorized
+            - forbidden
+            - internal_error
+            - conflict
+        details:
+          description: Additional error context (nullable)
+          oneOf:
+            - type: object
+            - type: "null"
+
+    # -------------------------------------------------------------------------
+    # Sessions
+    # -------------------------------------------------------------------------
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique session identifier
+        organization_id:
+          type: string
+          description: Organization that owns this session
+        user_id:
+          type: string
+          description: User who started the session
+        tool:
+          type: string
+          description: Agent tool name (e.g., claude-code, cursor, aider)
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: |
+            Agent trust level (1-5). Higher levels unlock more autonomous actions.
+            - 1: Observe only
+            - 2: Suggest (default)
+            - 3: Auto-apply safe changes
+            - 4: Auto-apply with review
+            - 5: Full autonomy
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Granted agent capabilities (e.g., file_write, shell_execute)
+        constraints:
+          type: array
+          items:
+            type: string
+          description: Active constraints on agent behavior
+        service_scope:
+          type: array
+          items:
+            type: string
+          description: Service IDs the session is scoped to
+        status:
+          type: string
+          enum: [active, ended, expired]
+          description: Current session status
+        started_at:
+          type: string
+          format: date-time
+          description: When the session started
+        expires_at:
+          type: string
+          format: date-time
+          description: When the session will expire
+        last_heartbeat:
+          type: string
+          format: date-time
+          description: Last heartbeat timestamp from the agent
+
+    SessionResponse:
+      type: object
+      properties:
+        data:
+          $ref: "#/components/schemas/Session"
+
+    SessionListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+        total:
+          type: integer
+          description: Total number of matching sessions
+        limit:
+          type: integer
+          description: Page size used
+        offset:
+          type: integer
+          description: Offset used
+
+    CreateSessionRequest:
+      type: object
+      required: [tool]
+      properties:
+        organization_id:
+          type: string
+          description: Organization ID (UUID in PostgreSQL mode)
+        user_id:
+          type: string
+          description: User ID (UUID in PostgreSQL mode)
+        tool:
+          type: string
+          description: Agent tool name
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 2
+          description: Initial trust level
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Requested agent capabilities
+        service_scope:
+          type: array
+          items:
+            type: string
+          description: Service IDs to scope the session to
+        ttl_hours:
+          type: integer
+          default: 8
+          minimum: 1
+          description: Session time-to-live in hours
+
+    UpdateSessionRequest:
+      type: object
+      properties:
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Updated trust level
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Updated capabilities list
+        constraints:
+          type: array
+          items:
+            type: string
+          description: Updated constraints list
+        status:
+          type: string
+          description: Updated status
+
+    # -------------------------------------------------------------------------
+    # Governance
+    # -------------------------------------------------------------------------
+    CheckActionRequest:
+      type: object
+      required: [session_id, action_type]
+      properties:
+        session_id:
+          type: string
+          description: Active session ID
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Trust level to evaluate against (overrides session default)
+        action_type:
+          type: string
+          description: Type of action being checked (e.g., file_write, shell_execute, deploy)
+        target:
+          type: object
+          additionalProperties: true
+          description: Action target details (path, resource, etc.)
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for policy evaluation
+
+    CheckActionResult:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the action is permitted
+        requires_approval:
+          type: boolean
+          description: Whether human approval is required before proceeding
+        denied_reasons:
+          type: array
+          items:
+            type: string
+          description: Reasons the action was denied (empty if allowed)
+        policy_names:
+          type: array
+          items:
+            type: string
+          description: Names of policies that matched this action
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Non-blocking warnings about the action
+        restrictions:
+          type: array
+          items:
+            type: string
+          description: Additional restrictions placed on the action
+
+    RequestApprovalRequest:
+      type: object
+      required: [session_id, action, reason]
+      properties:
+        session_id:
+          type: string
+          description: Active session ID
+        decision_id:
+          type: string
+          description: Related decision record ID (optional)
+        action:
+          type: string
+          description: Human-readable description of the action
+        action_type:
+          type: string
+          description: Action type category
+        target:
+          type: object
+          additionalProperties: true
+          description: Action target details
+        reason:
+          type: string
+          description: Why the agent wants to perform this action
+        policy_names:
+          type: array
+          items:
+            type: string
+          description: Policies that triggered the escalation
+        context_summary:
+          type: object
+          additionalProperties: true
+          description: Summary of the context for the approver
+        priority:
+          type: string
+          enum: [low, normal, high, critical]
+          default: "normal"
+          description: Escalation priority
+
+    ResolveApprovalRequest:
+      type: object
+      required: [approved]
+      properties:
+        approved:
+          type: boolean
+          description: Whether the action is approved
+        comment:
+          type: string
+          description: Approver's comment or rationale
+
+    EscalationRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique escalation request ID
+        session_id:
+          type: string
+        decision_id:
+          type: string
+          description: Related decision record ID
+        action:
+          type: string
+          description: Action requiring approval
+        action_type:
+          type: string
+        target:
+          type: object
+          additionalProperties: true
+        reason:
+          type: string
+          description: Agent's reason for the action
+        policy_names:
+          type: array
+          items:
+            type: string
+        context_summary:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [pending, approved, denied, expired]
+        priority:
+          type: string
+          enum: [low, normal, high, critical]
+        approver_id:
+          type: string
+          description: ID of the user who resolved the request
+        approver_comment:
+          type: string
+          description: Comment from the approver
+        requested_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+          description: When the request was approved or denied
+
+    EscalationListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/EscalationRequest"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # -------------------------------------------------------------------------
+    # Audit -- Decisions
+    # -------------------------------------------------------------------------
+    LogDecisionRequest:
+      type: object
+      required: [session_id, decision_type, action]
+      properties:
+        session_id:
+          type: string
+          description: Active session ID
+        decision_type:
+          type: string
+          description: Category of decision (e.g., file_modification, shell_command, architecture)
+        action:
+          type: string
+          description: Human-readable description of the action taken
+        target:
+          type: object
+          additionalProperties: true
+          description: What the action targets (file path, resource, etc.)
+        reasoning:
+          type: object
+          additionalProperties: true
+          description: Structured reasoning behind the decision
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.8
+          description: Agent's confidence in this decision (0.0 to 1.0)
+        alternatives:
+          type: array
+          items:
+            $ref: "#/components/schemas/Alternative"
+          description: Other options the agent considered
+        context_snapshot:
+          type: object
+          additionalProperties: true
+          description: Snapshot of relevant context at decision time
+        policy_result:
+          $ref: "#/components/schemas/PolicyResult"
+
+    Alternative:
+      type: object
+      properties:
+        action:
+          type: string
+          description: Alternative action description
+        reason:
+          type: string
+          description: Why this alternative was not chosen
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Confidence in this alternative
+
+    PolicyResult:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether policy evaluation allowed the action
+        denied_reasons:
+          type: array
+          items:
+            type: string
+          description: Reasons for denial
+        policy_names:
+          type: array
+          items:
+            type: string
+          description: Policies that were evaluated
+
+    DecisionRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique decision record ID
+        session_id:
+          type: string
+        decision_type:
+          type: string
+        action:
+          type: string
+        target:
+          type: object
+          additionalProperties: true
+        reasoning:
+          type: object
+          additionalProperties: true
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        alternatives:
+          type: array
+          items:
+            $ref: "#/components/schemas/Alternative"
+        context_snapshot:
+          type: object
+          additionalProperties: true
+        policy_result:
+          $ref: "#/components/schemas/PolicyResult"
+        status:
+          type: string
+          description: Decision execution status
+        outcome:
+          type: string
+          description: Outcome after execution (success, failure, etc.)
+        created_at:
+          type: string
+          format: date-time
+
+    DecisionListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DecisionRecord"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # -------------------------------------------------------------------------
+    # Commits
+    # -------------------------------------------------------------------------
+    PrepareCommitRequest:
+      type: object
+      required: [session_id, files]
+      properties:
+        session_id:
+          type: string
+          description: Active session ID
+        files:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: List of staged file paths
+        message:
+          type: string
+          description: Intended commit message
+
+    PrepareCommitResult:
+      type: object
+      properties:
+        commit_token:
+          type: string
+          description: Token to use when registering the commit after `git commit`
+        approved:
+          type: boolean
+          description: Whether the commit is approved by policy evaluation
+        reason:
+          type: string
+          description: Reason for approval or denial
+
+    RegisterCommitRequest:
+      type: object
+      required: [commit_token, commit_sha]
+      properties:
+        commit_token:
+          type: string
+          description: Token from a prior `prepareCommit` call
+        commit_sha:
+          type: string
+          description: Git commit SHA from the completed commit
+
+    CommitRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique commit record ID
+        session_id:
+          type: string
+        commit_sha:
+          type: string
+          description: Git commit SHA
+        commit_token:
+          type: string
+          description: Preparation token
+        files:
+          type: array
+          items:
+            type: string
+          description: Files included in the commit
+        message:
+          type: string
+          description: Commit message
+        status:
+          type: string
+          description: Commit record status (prepared, committed, verified)
+        approved:
+          type: boolean
+          description: Whether the commit was approved by policy
+        approval_reason:
+          type: string
+          description: Reason for approval decision
+        prepared_at:
+          type: string
+          format: date-time
+        committed_at:
+          type: string
+          format: date-time
+          description: When the commit was registered
+        verified_at:
+          type: string
+          format: date-time
+          description: When the commit was verified (PostgreSQL only; SQLite infers from status)
+
+    VerifyCommitRequest:
+      type: object
+      required: [commit_sha]
+      properties:
+        commit_sha:
+          type: string
+          description: Git commit SHA to verify
+
+    VerifyCommitResult:
+      type: object
+      properties:
+        verified:
+          type: boolean
+          description: Whether the commit has a complete audit trail
+        commit_sha:
+          type: string
+        session_id:
+          type: string
+          description: Session that produced this commit
+        verified_at:
+          type: string
+          format: date-time
+          description: Verification timestamp
+
+    # -------------------------------------------------------------------------
+    # Policies
+    # -------------------------------------------------------------------------
+    CreatePolicyRequest:
+      type: object
+      required: [name, category]
+      properties:
+        name:
+          type: string
+          description: Unique policy name
+        description:
+          type: string
+          description: Human-readable policy description
+        category:
+          type: string
+          description: Policy category (e.g., security, compliance, operational)
+        enabled:
+          type: boolean
+          default: true
+          description: Whether the policy is active
+        priority:
+          type: integer
+          default: 0
+          description: Evaluation priority (higher = evaluated first)
+        policy_type:
+          type: string
+          enum: [builtin, rego, custom]
+          description: Type of policy implementation
+        rego_code:
+          type: string
+          description: OPA/Rego source code (for rego type policies)
+        builtin_name:
+          type: string
+          description: |
+            Name of the builtin evaluator (for builtin type policies).
+            Available builtins: sensitive_files, blast_radius, off_hours,
+            cost_limits, migration_approval, rate_limiting.
+        config:
+          type: object
+          additionalProperties: true
+          description: Policy-specific configuration
+        min_trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Minimum trust level required to bypass this policy
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags for filtering and grouping
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Arbitrary metadata
+
+    UpdatePolicyRequest:
+      type: object
+      description: All fields are optional. Only provided fields are updated.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+        policy_type:
+          type: string
+          enum: [builtin, rego, custom]
+        rego_code:
+          type: string
+        builtin_name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        min_trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+
+    PolicyDefinition:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique policy definition ID
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        enabled:
+          type: boolean
+        priority:
+          type: integer
+        policy_type:
+          type: string
+          enum: [builtin, rego, custom]
+        rego_code:
+          type: string
+        builtin_name:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+        min_trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+        tags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        trigger_count:
+          type: integer
+          description: Number of times this policy has been triggered
+        last_triggered:
+          type: string
+          description: Relative time since last trigger (e.g., "5 minutes ago", "Never")
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PolicyListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyDefinition"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # -------------------------------------------------------------------------
+    # Services
+    # -------------------------------------------------------------------------
+    CreateServiceRequest:
+      type: object
+      required: [name]
+      properties:
+        organization_id:
+          type: string
+          description: Owning organization ID
+        name:
+          type: string
+          description: Service name
+        description:
+          type: string
+          description: Service description
+        tier:
+          type: string
+          description: Service tier (e.g., critical, standard, internal)
+        agent_constraints:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentConstraint"
+          description: Constraints applied to agents working on this service
+        context_config:
+          $ref: "#/components/schemas/ContextConfig"
+        escalation_config:
+          $ref: "#/components/schemas/EscalationConfig"
+        spec:
+          type: object
+          additionalProperties: true
+          description: Service specification metadata
+        human_docs:
+          type: string
+          description: Human-readable documentation for agents
+
+    UpdateServiceRequest:
+      type: object
+      description: All fields are optional. Only provided fields are updated.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        tier:
+          type: string
+        agent_constraints:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentConstraint"
+        context_config:
+          $ref: "#/components/schemas/ContextConfig"
+        escalation_config:
+          $ref: "#/components/schemas/EscalationConfig"
+        spec:
+          type: object
+          additionalProperties: true
+        human_docs:
+          type: string
+
+    Service:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique service ID
+        organization_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tier:
+          type: string
+        agent_constraints:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentConstraint"
+        context_config:
+          $ref: "#/components/schemas/ContextConfig"
+        escalation_config:
+          $ref: "#/components/schemas/EscalationConfig"
+        spec:
+          type: object
+          additionalProperties: true
+        human_docs:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ServiceResponse:
+      type: object
+      properties:
+        data:
+          $ref: "#/components/schemas/Service"
+
+    ServiceListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Service"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    AgentConstraint:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Constraint type (e.g., file_restriction, command_restriction)
+        description:
+          type: string
+          description: Human-readable constraint description
+        severity:
+          type: string
+          description: Constraint severity (e.g., low, medium, high, critical)
+        pattern:
+          type: string
+          description: Glob or regex pattern for matching (optional)
+
+    ContextConfig:
+      type: object
+      description: Token budget configuration for agent context windows
+      properties:
+        essential_token_budget:
+          type: integer
+          description: Token budget for essential context
+        task_relevant_token_budget:
+          type: integer
+          description: Token budget for task-relevant context
+        supporting_token_budget:
+          type: integer
+          description: Token budget for supporting context
+        include_paths:
+          type: array
+          items:
+            type: string
+          description: File paths to include in context
+        exclude_paths:
+          type: array
+          items:
+            type: string
+          description: File paths to exclude from context
+        priority_files:
+          type: array
+          items:
+            type: string
+          description: Files to prioritize in context loading
+
+    EscalationConfig:
+      type: object
+      description: Configuration for escalation behavior
+      properties:
+        default_approvers:
+          type: array
+          items:
+            type: string
+          description: Default approver identifiers (email or user ID)
+        timeout_minutes:
+          type: integer
+          description: Minutes before an escalation request expires
+        auto_approve:
+          type: boolean
+          description: Whether to auto-approve if no response within timeout
+        notify_on_escalate:
+          type: boolean
+          description: Whether to send notifications on escalation
+
+    # -------------------------------------------------------------------------
+    # Auth & Users
+    # -------------------------------------------------------------------------
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: User email address
+        name:
+          type: string
+          description: Display name
+        password:
+          type: string
+          minLength: 8
+          description: Password (minimum 8 characters)
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          description: Refresh token from a prior login or refresh
+
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          $ref: "#/components/schemas/UserProfile"
+        access_token:
+          type: string
+          description: JWT access token (HMAC-SHA256, 15 minute TTL)
+        refresh_token:
+          type: string
+          description: Refresh token (7 day TTL)
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds
+        token_type:
+          type: string
+          example: "Bearer"
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          description: User ID
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+          description: User role (first user is auto-admin)
+        status:
+          type: string
+          enum: [active, disabled]
+        created_at:
+          type: string
+          format: date-time
+
+    UpdateUserRequest:
+      type: object
+      description: All fields are optional. Only provided fields are updated.
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        status:
+          type: string
+          enum: [active, disabled]
+
+    UserListResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserProfile"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer

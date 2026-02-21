@@ -1,0 +1,20 @@
+{{- if and .Values.adp.metrics.enabled (hasKey .Capabilities.APIVersions "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "adp.fullname" . }}
+  labels:
+    {{- include "adp.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "adp.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /metrics
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}
