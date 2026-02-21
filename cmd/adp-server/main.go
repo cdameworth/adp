@@ -300,16 +300,19 @@ func runPostgresMode() {
 	auditHandler := handlers.NewAuditHandler(decisionStore, commitStore)
 	policyHandler := handlers.NewPolicyHandler(policyDefinitionStore)
 
-	// Initialize reports handler if ClickHouse is available
-	var reportHandler *handlers.ReportHandler
+	// Initialize reports handler if ClickHouse is available.
+	// Use interface type directly to avoid typed-nil interface issue:
+	// a nil *ReportHandler assigned to an interface is NOT a nil interface.
+	var reportHandler api.ReportsHandler
 	if reportingStore != nil {
 		reportHandler = handlers.NewReportHandler(reportingStore)
 	}
 
-	// Initialize user store and auth handlers
+	// Initialize user store and auth handlers.
+	// Use interface types to avoid typed-nil interface assignments.
 	pgUserStore := database.NewPgUserStore(pgClient)
-	var pgAuthHandler *handlers.AuthHandlerImpl
-	var pgAdminHandler *handlers.AdminHandlerImpl
+	var pgAuthHandler api.AuthHandler
+	var pgAdminHandler api.AdminHandler
 	var pgTokenService *user.TokenService
 	if cfg.Auth.JWTSecret != "" {
 		pgTokenService = user.NewTokenService(cfg.Auth.JWTSecret, "adp", 15*time.Minute, 7*24*time.Hour)
