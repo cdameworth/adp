@@ -88,11 +88,13 @@ type AuthHandler interface {
 	RefreshToken(w http.ResponseWriter, r *http.Request)
 	GetProfile(w http.ResponseWriter, r *http.Request)
 	UpdateProfile(w http.ResponseWriter, r *http.Request)
+	ChangePassword(w http.ResponseWriter, r *http.Request)
 }
 
 type AdminHandler interface {
 	ListUsers(w http.ResponseWriter, r *http.Request)
 	GetUser(w http.ResponseWriter, r *http.Request)
+	CreateUser(w http.ResponseWriter, r *http.Request)
 	UpdateUser(w http.ResponseWriter, r *http.Request)
 	DisableUser(w http.ResponseWriter, r *http.Request)
 }
@@ -244,10 +246,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		mux.HandleFunc("POST /v1/auth/refresh", cfg.AuthHandler.RefreshToken)
 		mux.HandleFunc("GET /v1/auth/me", cfg.AuthHandler.GetProfile)
 		mux.HandleFunc("PATCH /v1/auth/me", cfg.AuthHandler.UpdateProfile)
+		mux.HandleFunc("POST /v1/auth/change-password", cfg.AuthHandler.ChangePassword)
 	}
 
 	// Admin endpoints (auth enforced in handler)
 	if cfg.AdminHandler != nil {
+		mux.HandleFunc("POST /v1/admin/users", cfg.AdminHandler.CreateUser)
 		mux.HandleFunc("GET /v1/admin/users", cfg.AdminHandler.ListUsers)
 		mux.HandleFunc("GET /v1/admin/users/{id}", cfg.AdminHandler.GetUser)
 		mux.HandleFunc("PATCH /v1/admin/users/{id}", cfg.AdminHandler.UpdateUser)

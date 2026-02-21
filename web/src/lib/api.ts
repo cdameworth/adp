@@ -149,6 +149,15 @@ export interface Policy {
   last_triggered?: string;
 }
 
+export interface UserProfile {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  created_at: string;
+}
+
 export interface ListResponse<T> {
   items: T[];
   total: number;
@@ -373,4 +382,47 @@ export const api = {
 
   togglePolicyEnabled: (id: string) =>
     fetchApi<Policy>(`/v1/policies/${id}/toggle`, { method: 'PATCH' }),
+
+  // Auth / Profile
+  getProfile: () =>
+    fetchApi<{ data: UserProfile }>('/v1/auth/me'),
+
+  updateProfile: (data: { name: string }) =>
+    fetchApi<{ data: UserProfile }>('/v1/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  changePassword: (data: { current_password: string; new_password: string }) =>
+    fetchApi<{ data: { message: string } }>('/v1/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // Admin: Users
+  getUsers: (params?: { limit?: number; offset?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.offset) query.set('offset', String(params.offset));
+    const qs = query.toString();
+    return fetchApi<ListResponse<UserProfile>>(`/v1/admin/users${qs ? `?${qs}` : ''}`);
+  },
+
+  getUser: (id: string) =>
+    fetchApi<{ data: UserProfile }>(`/v1/admin/users/${id}`),
+
+  createUser: (data: { email: string; name: string; password: string; role: string }) =>
+    fetchApi<{ data: UserProfile }>('/v1/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateUser: (id: string, data: { name?: string; role?: string; status?: string }) =>
+    fetchApi<{ data: UserProfile }>(`/v1/admin/users/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  disableUser: (id: string) =>
+    fetchApi<void>(`/v1/admin/users/${id}`, { method: 'DELETE' }),
 };

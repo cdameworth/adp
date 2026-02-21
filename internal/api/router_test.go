@@ -366,9 +366,16 @@ func (h *mockAuthHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 func (h *mockAuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"id": "user-1"})
 }
+func (h *mockAuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]string{"message": "Password changed"})
+}
 
 type mockAdminHandler struct{}
 
+func (h *mockAdminHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"id": "new-user"})
+}
 func (h *mockAdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode([]interface{}{})
 }

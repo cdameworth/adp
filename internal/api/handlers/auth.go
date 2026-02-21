@@ -47,6 +47,11 @@ type updateProfileRequest struct {
 	Name string `json:"name"`
 }
 
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 type authResponse struct {
 	User         *userResponse `json:"user"`
 	AccessToken  string        `json:"access_token"`
@@ -306,4 +311,59 @@ func (h *AuthHandlerImpl) UpdateProfile(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeSuccess(w, toUserResponse(updated))
+}
+
+// ChangePassword changes the current user's password after verifying the old one.
+func (h *AuthHandlerImpl) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	userID, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		writeUnauthorized(w, "Authentication required")
+		return
+	}
+
+	var req changePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "Invalid request body")
+		return
+	}
+
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		writeBadRequest(w, "Current password and new password are required")
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		writeBadRequest(w, "New password must be at least 8 characters")
+		return
+	}
+
+	// Fetch user to verify current password
+	u, err := h.users.GetByID(r.Context(), userID)
+	if err != nil {
+		writeNotFound(w, "User not found")
+		return
+	}
+
+	if !user.CheckPassword(u.PasswordHash, req.CurrentPassword) {
+		writeBadRequest(w, "Current password is incorrect")
+		return
+	}
+
+	// Hash new password
+	hash, err := user.HashPassword(req.NewPassword)
+	if err != nil {
+		slog.Error("failed to hash password", "error", err)
+		writeInternalError(w, "Failed to process password")
+		return
+	}
+
+	_, err = h.users.Update(r.Context(), userID, store.UpdateUserInput{
+		PasswordHash: &hash,
+	})
+	if err != nil {
+		slog.Error("failed to update password", "error", err)
+		writeInternalError(w, "Failed to update password")
+		return
+	}
+
+	writeSuccess(w, map[string]string{"message": "Password changed successfully"})
 }

@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
@@ -14,6 +15,8 @@ import {
   Box,
   Shield,
   GitGraph,
+  UserCog,
+  User,
 } from 'lucide-react';
 
 const navigation = [
@@ -28,8 +31,38 @@ const navigation = [
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
+const adminNavigation = [
+  { name: 'Users', href: '/users', icon: UserCog },
+];
+
+const accountNavigation = [
+  { name: 'Profile', href: '/profile', icon: User },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: session } = useSession();
+  const isAdmin = session?.user?.role === 'admin';
+
+  const renderNavItem = (item: { name: string; href: string; icon: any }) => {
+    const isActive = pathname === item.href ||
+      (item.href !== '/' && pathname.startsWith(item.href));
+    return (
+      <Link
+        key={item.name}
+        href={item.href}
+        className={cn(
+          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+          isActive
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+        )}
+      >
+        <item.icon className="h-5 w-5" />
+        {item.name}
+      </Link>
+    );
+  };
 
   return (
     <div className="flex h-full w-64 flex-col bg-card border-r">
@@ -49,25 +82,27 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-4">
-        {navigation.map((item) => {
-          const isActive = pathname === item.href ||
-            (item.href !== '/' && pathname.startsWith(item.href));
-          return (
-            <Link
-              key={item.name}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <item.icon className="h-5 w-5" />
-              {item.name}
-            </Link>
-          );
-        })}
+        {navigation.map(renderNavItem)}
+
+        {/* Admin section */}
+        {isAdmin && (
+          <>
+            <div className="pt-4 pb-1">
+              <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Admin
+              </span>
+            </div>
+            {adminNavigation.map(renderNavItem)}
+          </>
+        )}
+
+        {/* Account section */}
+        <div className="pt-4 pb-1">
+          <span className="px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Account
+          </span>
+        </div>
+        {accountNavigation.map(renderNavItem)}
       </nav>
 
       {/* Footer */}
