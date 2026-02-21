@@ -4,9 +4,9 @@
 
 # ── Go build artifacts ──────────────────────────
 # Compiled binaries (built via go build ./cmd/*)
-adp-cli
-adp-mcp
-adp-server
+/adp-cli
+/adp-mcp
+/adp-server
 bin/
 dist/
 
