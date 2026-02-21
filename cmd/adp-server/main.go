@@ -282,7 +282,16 @@ func runPostgresMode() {
 
 	// Initialize unified policy engine with database policies + base Rego policy
 	policyStoreAdapter := governance.NewPolicyStoreAdapter(policyDefinitionStore)
-	unifiedPolicyEngine := governance.NewUnifiedPolicyEngine(policyStoreAdapter, "policies/default.rego")
+	regoPath := os.Getenv("ADP_REGO_POLICY_PATH")
+	if regoPath == "" {
+		// Check bundled path first (Docker), then local
+		if _, statErr := os.Stat("/etc/adp/policies/default.rego"); statErr == nil {
+			regoPath = "/etc/adp/policies/default.rego"
+		} else {
+			regoPath = "policies/default.rego"
+		}
+	}
+	unifiedPolicyEngine := governance.NewUnifiedPolicyEngine(policyStoreAdapter, regoPath)
 
 	// Initialize handlers
 	sessionHandler := handlers.NewSessionHandler(sessionStore)
