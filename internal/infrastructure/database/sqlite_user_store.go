@@ -78,6 +78,7 @@ func (s *SQLiteUserStore) Update(ctx context.Context, id string, input store.Upd
 	name := existing.Name
 	role := existing.Role
 	status := existing.Status
+	passwordHash := existing.PasswordHash
 
 	if input.Name != nil {
 		name = *input.Name
@@ -88,12 +89,15 @@ func (s *SQLiteUserStore) Update(ctx context.Context, id string, input store.Upd
 	if input.Status != nil {
 		status = *input.Status
 	}
+	if input.PasswordHash != nil {
+		passwordHash = *input.PasswordHash
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	_, err = s.client.db.ExecContext(ctx,
-		`UPDATE users SET name = ?, role = ?, status = ?, updated_at = ? WHERE id = ?`,
-		name, role, status, now, id,
+		`UPDATE users SET name = ?, role = ?, status = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
+		name, role, status, passwordHash, now, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update user: %w", err)

@@ -79,6 +79,7 @@ func (s *PgUserStore) Update(ctx context.Context, id string, input store.UpdateU
 	name := existing.Name
 	role := existing.Role
 	status := existing.Status
+	passwordHash := existing.PasswordHash
 
 	if input.Name != nil {
 		name = *input.Name
@@ -89,14 +90,17 @@ func (s *PgUserStore) Update(ctx context.Context, id string, input store.UpdateU
 	if input.Status != nil {
 		status = *input.Status
 	}
+	if input.PasswordHash != nil {
+		passwordHash = *input.PasswordHash
+	}
 
 	var u store.User
 	var createdAt, updatedAt time.Time
 	err = s.client.db.QueryRowContext(ctx,
-		`UPDATE users SET name = $1, role = $2, status = $3, updated_at = NOW()
-		 WHERE id = $4
+		`UPDATE users SET name = $1, role = $2, status = $3, password_hash = $4, updated_at = NOW()
+		 WHERE id = $5
 		 RETURNING id, email, name, password_hash, role, status, created_at, updated_at`,
-		name, role, status, id,
+		name, role, status, passwordHash, id,
 	).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.Role, &u.Status, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update user: %w", err)

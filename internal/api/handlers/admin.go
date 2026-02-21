@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/adp/adp/internal/api/middleware"
 	"github.com/adp/adp/internal/domain/user"
@@ -90,10 +91,72 @@ func (h *AdminHandlerImpl) GetUser(w http.ResponseWriter, r *http.Request) {
 	writeSuccess(w, toUserResponse(u))
 }
 
+type createUserRequest struct {
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
 type updateUserRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Role   *string `json:"role,omitempty"`
 	Status *string `json:"status,omitempty"`
+}
+
+// CreateUser creates a new user account (admin only).
+func (h *AdminHandlerImpl) CreateUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireAdmin(r); !ok {
+		writeForbidden(w, "Admin access required")
+		return
+	}
+
+	var req createUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "Invalid request body")
+		return
+	}
+
+	if req.Email == "" || req.Password == "" {
+		writeBadRequest(w, "Email and password are required")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeBadRequest(w, "Password must be at least 8 characters")
+		return
+	}
+	if req.Role == "" {
+		req.Role = string(user.UserRoleUser)
+	}
+	if !user.ValidRole(req.Role) {
+		writeBadRequest(w, "Invalid role. Must be 'admin' or 'user'")
+		return
+	}
+
+	hash, err := user.HashPassword(req.Password)
+	if err != nil {
+		slog.Error("failed to hash password", "error", err)
+		writeInternalError(w, "Failed to process password")
+		return
+	}
+
+	created, err := h.users.Create(r.Context(), store.CreateUserInput{
+		Email:        strings.ToLower(strings.TrimSpace(req.Email)),
+		Name:         strings.TrimSpace(req.Name),
+		PasswordHash: hash,
+		Role:         req.Role,
+	})
+	if err != nil {
+		if isAlreadyExistsError(err) {
+			writeConflict(w, "A user with this email already exists")
+			return
+		}
+		slog.Error("failed to create user", "error", err)
+		writeInternalError(w, "Failed to create user")
+		return
+	}
+
+	writeCreated(w, toUserResponse(created))
 }
 
 // UpdateUser updates a user's role, status, or name.

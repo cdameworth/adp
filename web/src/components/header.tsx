@@ -48,7 +48,7 @@ export function Header() {
         {/* User info + logout */}
         {session?.user ? (
           <div className="flex items-center gap-2">
-            <Link href="/settings">
+            <Link href="/profile">
               <Button variant="ghost" size="sm" className="gap-2">
                 <User className="h-4 w-4" />
                 <span className="text-sm">{session.user.name || session.user.email}</span>
@@ -69,7 +69,7 @@ export function Header() {
             </Button>
           </div>
         ) : (
-          <Link href="/settings">
+          <Link href="/profile">
             <Button variant="ghost" size="icon">
               <User className="h-5 w-5" />
             </Button>
