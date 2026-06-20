@@ -1,0 +1,558 @@
+openapi: 3.0.3
+info:
+  title: ADP Governance Tools
+  version: 1.0.0
+  description: >-
+    Curated subset of the Agent Developer Portal (ADP) REST API, shaped as an
+    Amazon Bedrock AgentCore Gateway OpenAPI target. Each operation below becomes
+    one MCP tool (the tool name is the operationId) that an AgentCore-hosted
+    agent calls inline to govern its own work: open a session, check actions
+    against policy, request human approval, and write decisions to the audit
+    trail.
+
+    Authentication is intentionally NOT declared in this spec. AgentCore Gateway
+    does not support spec-level security schemes; it injects the ADP API key via
+    its outbound API_KEY credential provider (as the X-API-Key header). See
+    README.md in this directory for the full setup.
+servers:
+  # Replace with your reachable ADP REST API (adp-server) endpoint. Must be a
+  # fully qualified, static HTTPS URL. AgentCore Gateway blocks requests to
+  # private IP ranges, so an internal ADP host needs a public HTTPS endpoint or
+  # a PrivateLink/VPC egress path.
+  - url: https://adp.example.internal
+    description: ADP REST API server (adp-server)
+
+paths:
+  /v1/sessions:
+    post:
+      operationId: adp_start_session
+      summary: Start an ADP governance session
+      description: >-
+        Open a new ADP session before taking any governed action. The returned
+        `data.id` is the session_id you MUST pass to adp_check_action,
+        adp_request_approval, adp_log_decision, and adp_heartbeat. Set `tool` to
+        your agent's name. `trust_level` (1-5) controls how autonomous the agent
+        may be and is used by the ADP policy engine during checks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+
+  /v1/sessions/{id}:
+    delete:
+      operationId: adp_end_session
+      summary: End an ADP session
+      description: >-
+        End an active ADP session when the agent's task is complete. The session
+        record is preserved for audit. Pass the session_id from adp_start_session
+        as the `id` path parameter.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndSessionResponse'
+
+  /v1/sessions/{id}/heartbeat:
+    patch:
+      operationId: adp_heartbeat
+      summary: Send a session heartbeat
+      description: >-
+        Signal that the agent is still active, refreshing the session's
+        last_heartbeat so the session is not treated as stale during a
+        long-running task. No request body. Pass the session_id as `id`.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+
+  /v1/governance/check:
+    post:
+      operationId: adp_check_action
+      summary: Check whether an action is allowed by policy
+      description: >-
+        Evaluate a proposed action against ADP governance policy BEFORE
+        performing it. Call this prior to any potentially sensitive action
+        (writing files, running shell commands, deploying, changing infra).
+        Returns `data.allowed`, `data.requires_approval`, `data.denied_reasons`,
+        matched `data.policy_names`, and `data.warnings`. If `requires_approval`
+        is true, call adp_request_approval next. If `allowed` is false, do not
+        perform the action.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckActionRequest'
+      responses:
+        '200':
+          description: Policy evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckActionResultEnvelope'
+
+  /v1/governance/approvals:
+    post:
+      operationId: adp_request_approval
+      summary: Request human approval for a blocked action
+      description: >-
+        Create a human approval (escalation) request when adp_check_action
+        returned requires_approval=true (or allowed=false). Provide a clear
+        `action` description and `reason`. The returned `data.id` and
+        `data.status` (pending/approved/denied/expired) can be polled with
+        adp_get_approval. Do not perform the action until status is "approved".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestApprovalRequest'
+      responses:
+        '201':
+          description: Approval request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EscalationEnvelope'
+
+  /v1/governance/approvals/{id}:
+    get:
+      operationId: adp_get_approval
+      summary: Get the status of an approval request
+      description: >-
+        Poll an approval request created by adp_request_approval. Pass its id as
+        the `id` path parameter. Read `data.status`: proceed only when
+        "approved"; stop if "denied" or "expired".
+      parameters:
+        - $ref: '#/components/parameters/ApprovalId'
+      responses:
+        '200':
+          description: Approval request details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EscalationEnvelope'
+
+  /v1/audit/decisions:
+    post:
+      operationId: adp_log_decision
+      summary: Log an agent decision to the audit trail
+      description: >-
+        Record a decision the agent made, with reasoning and confidence, to
+        ADP's audit trail. Call after deciding to take a governed action.
+        Include `decision_type`, a human-readable `action`, structured
+        `reasoning`, and `confidence` (0.0-1.0). Optionally include the
+        `policy_result` returned by the prior adp_check_action call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogDecisionRequest'
+      responses:
+        '201':
+          description: Decision recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionEnvelope'
+
+components:
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      description: ADP session ID (the data.id returned by adp_start_session).
+      schema:
+        type: string
+    ApprovalId:
+      name: id
+      in: path
+      required: true
+      description: ADP approval/escalation ID (the data.id returned by adp_request_approval).
+      schema:
+        type: string
+
+  schemas:
+    StartSessionRequest:
+      type: object
+      required:
+        - tool
+      properties:
+        tool:
+          type: string
+          description: Agent tool name, e.g. "strands-agent" or "claude-code".
+        organization_id:
+          type: string
+          description: Organization ID that owns the session.
+        user_id:
+          type: string
+          description: ID of the human user the agent acts on behalf of, if known.
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 2
+          description: >-
+            Initial trust level: 1=observe, 2=suggest, 3=auto-apply safe,
+            4=auto-apply with review, 5=full autonomy. Used by the policy engine.
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: Requested capabilities, e.g. ["file_write","shell_execute"].
+        service_scope:
+          type: array
+          items:
+            type: string
+          description: Service IDs the session is scoped to.
+        ttl_hours:
+          type: integer
+          minimum: 1
+          default: 8
+          description: Session time-to-live in hours.
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Session ID; pass this as session_id to the other tools.
+        organization_id:
+          type: string
+        user_id:
+          type: string
+        tool:
+          type: string
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+        capabilities:
+          type: array
+          items:
+            type: string
+        constraints:
+          type: array
+          items:
+            type: string
+        service_scope:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum:
+            - active
+            - ended
+            - expired
+        started_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        last_heartbeat:
+          type: string
+          format: date-time
+
+    SessionEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/Session'
+
+    EndSessionResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            message:
+              type: string
+
+    HeartbeatResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            session_id:
+              type: string
+            last_heartbeat:
+              type: string
+              format: date-time
+
+    CheckActionRequest:
+      type: object
+      required:
+        - session_id
+        - action_type
+      properties:
+        session_id:
+          type: string
+          description: Active session ID from adp_start_session.
+        trust_level:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Optional trust level to evaluate against (overrides the session default).
+        action_type:
+          type: string
+          description: Action category, e.g. file_write, shell_execute, deploy.
+        target:
+          type: object
+          additionalProperties: true
+          description: 'Action target details, e.g. {"path": "/etc/nginx/nginx.conf"}.'
+        context:
+          type: object
+          additionalProperties: true
+          description: Additional context for policy evaluation.
+
+    CheckActionResult:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+          description: Whether the action is permitted.
+        requires_approval:
+          type: boolean
+          description: Whether human approval is required before proceeding.
+        denied_reasons:
+          type: array
+          items:
+            type: string
+        policy_names:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+        restrictions:
+          type: array
+          items:
+            type: string
+
+    CheckActionResultEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/CheckActionResult'
+
+    RequestApprovalRequest:
+      type: object
+      required:
+        - session_id
+        - action
+        - reason
+      properties:
+        session_id:
+          type: string
+        decision_id:
+          type: string
+          description: Related decision record ID, if any.
+        action:
+          type: string
+          description: Human-readable description of the action requiring approval.
+        action_type:
+          type: string
+        target:
+          type: object
+          additionalProperties: true
+        reason:
+          type: string
+          description: Why the agent wants to perform this action.
+        policy_names:
+          type: array
+          items:
+            type: string
+        context_summary:
+          type: object
+          additionalProperties: true
+          description: Summary of context for the human approver.
+        priority:
+          type: string
+          enum:
+            - low
+            - normal
+            - high
+            - critical
+          default: normal
+
+    EscalationRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        decision_id:
+          type: string
+        action:
+          type: string
+        action_type:
+          type: string
+        target:
+          type: object
+          additionalProperties: true
+        reason:
+          type: string
+        policy_names:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - denied
+            - expired
+        priority:
+          type: string
+          enum:
+            - low
+            - normal
+            - high
+            - critical
+        approver_id:
+          type: string
+        approver_comment:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+
+    EscalationEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/EscalationRequest'
+
+    Alternative:
+      type: object
+      properties:
+        action:
+          type: string
+        reason:
+          type: string
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+
+    PolicyResult:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        denied_reasons:
+          type: array
+          items:
+            type: string
+        policy_names:
+          type: array
+          items:
+            type: string
+
+    LogDecisionRequest:
+      type: object
+      required:
+        - session_id
+        - decision_type
+        - action
+      properties:
+        session_id:
+          type: string
+        decision_type:
+          type: string
+          description: Category, e.g. file_modification, shell_command, architecture.
+        action:
+          type: string
+          description: Human-readable description of the action taken.
+        target:
+          type: object
+          additionalProperties: true
+        reasoning:
+          type: object
+          additionalProperties: true
+          description: Structured reasoning behind the decision.
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          default: 0.8
+        alternatives:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alternative'
+        context_snapshot:
+          type: object
+          additionalProperties: true
+        policy_result:
+          $ref: '#/components/schemas/PolicyResult'
+
+    DecisionRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        decision_type:
+          type: string
+        action:
+          type: string
+        target:
+          type: object
+          additionalProperties: true
+        reasoning:
+          type: object
+          additionalProperties: true
+        confidence:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        status:
+          type: string
+        outcome:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    DecisionEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/DecisionRecord'
