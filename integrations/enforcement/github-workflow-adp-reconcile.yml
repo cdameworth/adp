@@ -1,0 +1,53 @@
+# Copy to .github/workflows/adp-reconcile.yml in each governed repo.
+# On every push, reports the pushed commits to ADP's reconciliation backstop,
+# which flags any commit lacking a governance trail as an "ungoverned activity"
+# finding (visible in the Backstage Enforcement tab).
+#
+# This is DETECTION, not prevention — it is non-blocking and catches gaps the
+# merge gate can't (direct pushes, repos without the required check, bypasses).
+#
+# Secrets: ADP_URL, ADP_API_KEY (optional).
+name: ADP reconciliation
+
+on:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  report-observed-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Report pushed commits to ADP reconciliation
+        env:
+          ADP_URL: ${{ secrets.ADP_URL }}
+          ADP_API_KEY: ${{ secrets.ADP_API_KEY }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # On a new branch, BEFORE is all-zeros; fall back to the head commit.
+          if printf '%s' "$BEFORE" | grep -qE '^0+$'; then
+            shas="$AFTER"
+          else
+            shas="$(git rev-list "${BEFORE}..${AFTER}")"
+          fi
+          if [ -z "$shas" ]; then echo "no commits to report"; exit 0; fi
+          commits="$(
+            for sha in $shas; do
+              author="$(git show -s --format='%an <%ae>' "$sha")"
+              jq -nc --arg sha "$sha" --arg repo "$REPO" --arg ref "$REF" --arg author "$author" \
+                '{sha:$sha, repo:$repo, ref:$ref, author:$author}'
+            done | jq -s '{commits: .}'
+          )"
+          curl -fsS -X POST "${ADP_URL%/}/v1/enforcement/commits/observed" \
+            -H 'Content-Type: application/json' \
+            ${ADP_API_KEY:+-H "X-API-Key: ${ADP_API_KEY}"} \
+            -d "$commits" | jq '{observed, flagged}'

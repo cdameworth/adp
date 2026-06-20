@@ -15,6 +15,7 @@ import (
 	"github.com/adp/adp/internal/api/middleware"
 	"github.com/adp/adp/internal/config"
 	"github.com/adp/adp/internal/domain/auth"
+	"github.com/adp/adp/internal/domain/enforcement"
 	"github.com/adp/adp/internal/domain/governance"
 	"github.com/adp/adp/internal/domain/user"
 	"github.com/adp/adp/internal/infrastructure/database"
@@ -66,6 +67,8 @@ func runSQLiteMode() {
 	escalationStore := database.NewSQLiteEscalationStore(sqliteClient)
 	decisionStore := database.NewSQLiteDecisionStore(sqliteClient)
 	commitStore := database.NewSQLiteCommitStore(sqliteClient)
+	docStore := database.NewSQLiteDocStore(sqliteClient)
+	reconciler := enforcement.NewReconciler(commitStore, enforcement.NewInMemoryFindingStore(0))
 
 	// Create SQLite-backed handlers
 	sessionHandler := handlers.NewSQLiteSessionHandler(sessionStore)
@@ -125,6 +128,9 @@ func runSQLiteMode() {
 		ServiceHandler:     serviceHandler,
 		PolicyHandler:      policyHandler,
 		ReportsHandler:     reportHandler,
+		DocStore:           docStore,
+		CommitVerifier:     commitStore,
+		Reconciler:         reconciler,
 		AuthHandler:        authHandler,
 		AdminHandler:       adminHandler,
 		AuthMiddleware:     authMw,
@@ -278,6 +284,7 @@ func runPostgresMode() {
 	escalationStore := database.NewEscalationStore(pgClient)
 	decisionStore := database.NewDecisionStore(pgClient)
 	commitStore := database.NewCommitStore(pgClient)
+	reconciler := enforcement.NewReconciler(commitStore, enforcement.NewInMemoryFindingStore(0))
 	policyDefinitionStore := database.NewPolicyDefinitionStore(pgClient)
 
 	// Initialize unified policy engine with database policies + base Rego policy
@@ -376,6 +383,8 @@ func runPostgresMode() {
 		AuditHandler:       auditHandler,
 		ReportsHandler:     reportHandler,
 		PolicyHandler:      policyHandler,
+		CommitVerifier:     commitStore,
+		Reconciler:         reconciler,
 		AuthHandler:        pgAuthHandler,
 		AdminHandler:       pgAdminHandler,
 		AuthMiddleware:     pgAuthMw,
