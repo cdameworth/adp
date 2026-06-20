@@ -168,9 +168,13 @@ func TestContextEndpoint(t *testing.T) {
 		t.Fatal("Missing data in response")
 	}
 
-	// Check context layers
+	// Context layers are nested under "layers" (content/tokens/sources each).
+	layers, ok := data["layers"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Missing layers in response")
+	}
 	for _, layer := range []string{"essential", "task_relevant", "supporting"} {
-		if _, exists := data[layer]; !exists {
+		if _, exists := layers[layer]; !exists {
 			t.Errorf("Missing context layer: %s", layer)
 		}
 	}
