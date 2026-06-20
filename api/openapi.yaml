@@ -319,6 +319,275 @@ paths:
           $ref: "#/components/responses/InternalError"
 
   # ---------------------------------------------------------------------------
+  # Context
+  # ---------------------------------------------------------------------------
+  /v1/context:
+    post:
+      operationId: getContext
+      summary: Assemble task context for an agent session
+      description: |
+        Returns a token-budgeted, layered context envelope (essential,
+        task_relevant, supporting) for a session and task.
+
+        NOTE: adp-server ships a lightweight, request-scoped assembler that does
+        not perform vector/semantic retrieval; responses include `degraded: true`.
+        Full retrieval requires the context.Engine (vector store + embeddings +
+        service registry), which is not wired into adp-server.
+      tags: [Context]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContextRequest"
+            example:
+              session_id: "abc-123"
+              service_id: "550e8400-e29b-41d4-a716-446655440001"
+              task: "Refactor the authentication module"
+              token_budget:
+                essential: 4000
+                task_relevant: 12000
+                supporting: 8000
+      responses:
+        "200":
+          description: Assembled context
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ContextResult"
+        "400":
+          description: Missing session_id or task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ---------------------------------------------------------------------------
+  # Documentation
+  # ---------------------------------------------------------------------------
+  /v1/docs:
+    get:
+      operationId: listDocs
+      summary: List generated documentation
+      description: |
+        Lists documentation produced by the ADP documentation engine
+        (categories: session_summary, risk_report, pattern_report). Filter by
+        session_id, free-text query, or category (default session_summary).
+        Read-only. Available only when adp-server is wired to a DocStore
+        (SQLite mode); returns 503 in PostgreSQL mode.
+      tags: [Documentation]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [session_summary, risk_report, pattern_report]
+        - name: session_id
+          in: query
+          schema:
+            type: string
+        - name: query
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DocRecord"
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: Documentation store not configured
+
+  /v1/docs/{id}:
+    get:
+      operationId: getDoc
+      summary: Get a generated document by ID
+      tags: [Documentation]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Document
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/DocRecord"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: Documentation store not configured
+
+  # ---------------------------------------------------------------------------
+  # Enforcement (reconciliation)
+  # ---------------------------------------------------------------------------
+  /v1/enforcement/commits/observed:
+    post:
+      operationId: observeCommits
+      summary: Report observed commits for reconciliation
+      description: |
+        Push-webhook target: reports commits seen in a repo. Any commit without
+        a verified ADP governance trail is recorded as an ungoverned-activity
+        finding (detection backstop to the merge gate). Returns 503 if no
+        reconciler is configured.
+      tags: [Enforcement]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commits]
+              properties:
+                commits:
+                  type: array
+                  items:
+                    type: object
+                    required: [sha]
+                    properties:
+                      sha:
+                        type: string
+                      repo:
+                        type: string
+                      ref:
+                        type: string
+                      author:
+                        type: string
+                      committed_at:
+                        type: string
+                        format: date-time
+      responses:
+        "200":
+          description: Reconciliation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  observed:
+                    type: integer
+                  flagged:
+                    type: integer
+                  findings:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Finding"
+        "503":
+          description: Reconciler not configured
+
+  /v1/enforcement/findings:
+    get:
+      operationId: listFindings
+      summary: List ungoverned-activity findings
+      tags: [Enforcement]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, acknowledged, resolved]
+      responses:
+        "200":
+          description: Findings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Finding"
+                  total:
+                    type: integer
+        "503":
+          description: Reconciler not configured
+
+  /v1/enforcement/findings/{id}:
+    patch:
+      operationId: resolveFinding
+      summary: Update a finding's status (acknowledge/resolve)
+      tags: [Enforcement]
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [open, acknowledged, resolved]
+      responses:
+        "200":
+          description: Updated finding
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Finding"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: Reconciler not configured
+
+  # ---------------------------------------------------------------------------
   # Governance
   # ---------------------------------------------------------------------------
   /v1/governance/check:
@@ -854,6 +1123,67 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /v1/commits/verify-batch:
+    post:
+      operationId: verifyCommitBatch
+      summary: Verify a batch of commit SHAs (server-side merge gate)
+      description: |
+        Authoritative check used by a forge merge gate: given a list of commit
+        SHAs, reports whether every commit has a verified ADP governance trail.
+        Always returns 200 on success with an `allowed` decision; the calling CI
+        job fails the required status check when `allowed` is false. Unlike the
+        client-side git hooks, this cannot be bypassed with `--no-verify`.
+        Returns 503 if no commit store is configured.
+      tags: [Commits]
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shas]
+              properties:
+                shas:
+                  type: array
+                  items:
+                    type: string
+            example:
+              shas: ["a1b2c3d4e5", "f6a7b8c9d0"]
+      responses:
+        "200":
+          description: Verification decision
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed:
+                    type: boolean
+                  total:
+                    type: integer
+                  verified:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sha:
+                          type: string
+                        verified:
+                          type: boolean
+                  unverified:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          description: Missing shas
+        "503":
+          description: Commit store not configured
 
   /v1/commits/verify:
     post:
@@ -1991,6 +2321,134 @@ components:
         status:
           type: string
           description: Updated status
+
+    # -------------------------------------------------------------------------
+    # Context
+    # -------------------------------------------------------------------------
+    ContextRequest:
+      type: object
+      required: [session_id, task]
+      properties:
+        session_id:
+          type: string
+          description: Active session ID
+        service_id:
+          type: string
+          description: Service the task targets (optional)
+        task:
+          type: string
+          description: Natural-language description of the task
+        token_budget:
+          type: object
+          properties:
+            essential:
+              type: integer
+              default: 4000
+            task_relevant:
+              type: integer
+              default: 12000
+            supporting:
+              type: integer
+              default: 8000
+
+    ContextLayer:
+      type: object
+      properties:
+        content:
+          type: string
+        tokens:
+          type: integer
+        sources:
+          type: array
+          items:
+            type: string
+
+    ContextResult:
+      type: object
+      properties:
+        session_id:
+          type: string
+        service_id:
+          type: string
+        task:
+          type: string
+        layers:
+          type: object
+          properties:
+            essential:
+              $ref: "#/components/schemas/ContextLayer"
+            task_relevant:
+              $ref: "#/components/schemas/ContextLayer"
+            supporting:
+              $ref: "#/components/schemas/ContextLayer"
+        total_tokens:
+          type: integer
+        cache_hit:
+          type: boolean
+        retrieval_time_ms:
+          type: integer
+        degraded:
+          type: boolean
+          description: True when only the lightweight assembler ran (no vector retrieval).
+        note:
+          type: string
+
+    # -------------------------------------------------------------------------
+    # Documentation
+    # -------------------------------------------------------------------------
+    DocRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        category:
+          type: string
+          enum: [session_summary, risk_report, pattern_report]
+        title:
+          type: string
+        content:
+          type: string
+          description: Markdown content
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Enforcement
+    # -------------------------------------------------------------------------
+    Finding:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [ungoverned_commit]
+        reference:
+          type: string
+          description: e.g. commit SHA
+        repo:
+          type: string
+        ref:
+          type: string
+        author:
+          type: string
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [open, acknowledged, resolved]
+        detected_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     # -------------------------------------------------------------------------
     # Governance

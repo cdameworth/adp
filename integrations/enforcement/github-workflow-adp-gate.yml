@@ -1,0 +1,46 @@
+# Copy to .github/workflows/adp-governance-gate.yml in each governed repo.
+# Then make "ADP governance gate" a REQUIRED status check in branch protection
+# for your default branch — that is what makes governance non-optional: the PR
+# cannot merge unless this check passes, regardless of what the agent did
+# locally.
+#
+# Secrets required: ADP_URL, ADP_API_KEY (optional).
+name: ADP governance gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  adp-governance-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify every commit has an ADP governance trail
+        env:
+          ADP_URL: ${{ secrets.ADP_URL }}
+          ADP_API_KEY: ${{ secrets.ADP_API_KEY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mapfile -t shas < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          if [ "${#shas[@]}" -eq 0 ]; then echo "no commits to verify"; exit 0; fi
+          payload="$(printf '%s\n' "${shas[@]}" | jq -R . | jq -s '{shas: .}')"
+          # curl -f => fail closed on any non-2xx (ADP down/misconfigured = block)
+          resp="$(curl -fsS -X POST "${ADP_URL%/}/v1/commits/verify-batch" \
+            -H 'Content-Type: application/json' \
+            ${ADP_API_KEY:+-H "X-API-Key: ${ADP_API_KEY}"} \
+            -d "$payload")"
+          if [ "$(jq -r '.allowed' <<<"$resp")" = "true" ]; then
+            echo "ADP gate: all ${#shas[@]} commit(s) governed"
+            exit 0
+          fi
+          echo "ADP gate: BLOCKED — ungoverned commits:" >&2
+          jq -r '.unverified[]' <<<"$resp" | sed 's/^/  - /' >&2
+          exit 1
