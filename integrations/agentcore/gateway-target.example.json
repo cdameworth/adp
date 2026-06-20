@@ -1,0 +1,28 @@
+{
+  "gatewayIdentifier": "<YOUR_GATEWAY_ID>",
+  "name": "adp-governance",
+  "description": "ADP governance tools (sessions, policy checks, approvals, decision audit) for AgentCore-hosted agents.",
+  "targetConfiguration": {
+    "mcp": {
+      "openApiSchema": {
+        "s3": {
+          "uri": "s3://<YOUR_BUCKET>/adp/adp-governance.openapi.yaml",
+          "bucketOwnerAccountId": "<YOUR_ACCOUNT_ID>"
+        }
+      }
+    }
+  },
+  "credentialProviderConfigurations": [
+    {
+      "credentialProviderType": "API_KEY",
+      "credentialProvider": {
+        "apiKeyCredentialProvider": {
+          "providerArn": "<API_KEY_CREDENTIAL_PROVIDER_ARN>",
+          "credentialLocation": "HEADER",
+          "credentialParameterName": "X-API-Key",
+          "credentialPrefix": ""
+        }
+      }
+    }
+  ]
+}
