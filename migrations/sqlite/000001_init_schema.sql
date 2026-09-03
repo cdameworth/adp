@@ -99,6 +99,28 @@ CREATE TABLE IF NOT EXISTS findings (
     UNIQUE (type, reference)
 );
 
+-- Behavioral verification: attested build/test evidence (#20)
+CREATE TABLE IF NOT EXISTS verifications (
+    id TEXT PRIMARY KEY,
+    commit_sha TEXT NOT NULL UNIQUE,
+    session_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('passed', 'failed')),
+    pipeline_url TEXT DEFAULT '',
+    runner_identity TEXT DEFAULT '',
+    evidence_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    received_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS verification_keys (
+    id TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    created_by TEXT DEFAULT '',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    revoked_at TEXT
+);
+
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON agent_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_org ON agent_sessions(organization_id);
@@ -121,3 +143,6 @@ CREATE INDEX IF NOT EXISTS idx_docs_session ON documentation(session_id);
 
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
 CREATE INDEX IF NOT EXISTS idx_findings_detected ON findings(detected_at);
+
+CREATE INDEX IF NOT EXISTS idx_verifications_session ON verifications(session_id);
+CREATE INDEX IF NOT EXISTS idx_verification_keys_repo ON verification_keys(repo);

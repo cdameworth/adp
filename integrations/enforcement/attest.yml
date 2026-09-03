@@ -1,0 +1,67 @@
+# Reference behavioral-verification attestor (#20).
+#
+# Runs your real build + test suite on the PR head and posts a signed
+# attestation to ADP. The attestation comes from CI — a trust domain the
+# agent does not control — which is the entire point: an agent's own claim
+# that "tests pass" is not evidence.
+#
+# When a `require_behavioral_verification` policy is enabled in ADP, the
+# merge gate (github-workflow-adp-gate.yml) additionally requires a passed
+# attestation for the head SHA, so this workflow must run (and pass) before
+# the gate can go green.
+#
+# Setup:
+#   1. An ADP admin creates a per-repo verification key:
+#        POST /v1/verification-keys {"repo": "org/repo"}   → returns key once
+#   2. Store it as the CI secret ADP_VERIFICATION_KEY, plus ADP_URL.
+#   3. Copy this file to .github/workflows/adp-attest.yml in the repo.
+#
+# The key can only attest for its repo; rotate by revoking + reissuing.
+
+name: ADP behavioral verification
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-attest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Replace with the repo's real build + test steps ──────────────
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...
+      # ─────────────────────────────────────────────────────────────────
+
+      - name: Attest to ADP
+        if: always()   # failed runs are attested too — failure is evidence
+        env:
+          ADP_URL: ${{ secrets.ADP_URL }}
+          ADP_VERIFICATION_KEY: ${{ secrets.ADP_VERIFICATION_KEY }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ job.status }}" = "success" ]; then STATUS="passed"; else STATUS="failed"; fi
+          # session_id is optional. If your agents tag commits with their ADP
+          # session (e.g. in the commit message), extract and pass it here so
+          # ADP can reject self-attestation. CI systems that can't map a
+          # commit to its agent session may omit it.
+          SESSION_ID="${ADP_COMMIT_SESSION_ID:-}"
+          curl -sf --max-time 10 -X POST "$ADP_URL/v1/verifications" \
+            -H "Content-Type: application/json" \
+            -H "X-Verification-Key: $ADP_VERIFICATION_KEY" \
+            -d "$(jq -n \
+              --arg repo "${{ github.repository }}" \
+              --arg sha "$HEAD_SHA" \
+              --arg status "$STATUS" \
+              --arg session "$SESSION_ID" \
+              --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              --arg runner "github-actions:$GITHUB_WORKFLOW" \
+              '{repo: $repo, commit_sha: $sha, status: $status, session_id: $session, pipeline_url: $url, runner_identity: $runner, completed_at: (now | todate)}')"

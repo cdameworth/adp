@@ -1538,7 +1538,7 @@ func TestEngine_CostLimitIntegration(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 28. Constructor: all 6 builtins registered
+// 28. Constructor: all 7 builtins registered
 // ---------------------------------------------------------------------------
 
 func TestNewUnifiedPolicyEngine_BuiltinsRegistered(t *testing.T) {
@@ -1551,6 +1551,7 @@ func TestNewUnifiedPolicyEngine_BuiltinsRegistered(t *testing.T) {
 		"cost_limit",
 		"require_migration_approval",
 		"rate_limit_api",
+		"require_behavioral_verification",
 	}
 
 	for _, name := range expectedBuiltins {

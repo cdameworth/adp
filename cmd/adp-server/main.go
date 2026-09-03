@@ -18,6 +18,7 @@ import (
 	"github.com/adp/adp/internal/domain/enforcement"
 	"github.com/adp/adp/internal/domain/governance"
 	"github.com/adp/adp/internal/domain/user"
+	"github.com/adp/adp/internal/domain/verification"
 	"github.com/adp/adp/internal/infrastructure/database"
 )
 
@@ -68,7 +69,28 @@ func runSQLiteMode() {
 	decisionStore := database.NewSQLiteDecisionStore(sqliteClient)
 	commitStore := database.NewSQLiteCommitStore(sqliteClient)
 	docStore := database.NewSQLiteDocStore(sqliteClient)
-	reconciler := enforcement.NewReconciler(commitStore, database.NewSQLiteFindingStore(sqliteClient))
+	findingStore := database.NewSQLiteFindingStore(sqliteClient)
+	reconciler := enforcement.NewReconciler(commitStore, findingStore)
+
+	// Behavioral verification (#20): the merge gate requires a passed
+	// attestation from an independent runner when
+	// ADP_REQUIRE_BEHAVIORAL_VERIFICATION=1 (SQLite mode has no policy store).
+	verificationStore := database.NewSQLiteVerificationStore(sqliteClient)
+	behavioralRequired := func(context.Context) bool {
+		return os.Getenv("ADP_REQUIRE_BEHAVIORAL_VERIFICATION") == "1"
+	}
+	commitVerifier := verification.NewGateVerifier(commitStore, verificationStore, behavioralRequired)
+	verificationHandler := handlers.NewVerificationHandler(
+		verificationStore, verificationStore,
+		func(ctx context.Context, sha string) (string, error) {
+			rec, err := commitStore.GetBySHA(ctx, sha)
+			if err != nil {
+				return "", err
+			}
+			return rec.SessionID, nil
+		},
+		findingStore, commitStore.IsCommitVerified, behavioralRequired,
+	)
 
 	// Create SQLite-backed handlers
 	sessionHandler := handlers.NewSQLiteSessionHandler(sessionStore)
@@ -122,21 +144,22 @@ func runSQLiteMode() {
 
 	// Build router with all available handlers for SQLite mode
 	router := api.NewRouter(api.RouterConfig{
-		SessionHandler:     sessionHandler,
-		GovernanceHandler:  governanceHandler,
-		AuditHandler:       auditHandler,
-		ServiceHandler:     serviceHandler,
-		PolicyHandler:      policyHandler,
-		ReportsHandler:     reportHandler,
-		DocStore:           docStore,
-		CommitVerifier:     commitStore,
-		Reconciler:         reconciler,
-		AuthHandler:        authHandler,
-		AdminHandler:       adminHandler,
-		AuthMiddleware:     authMw,
-		RateLimiter:        rateLimiter.Middleware,
-		Validator:          validator.ValidateMiddleware,
-		CORSAllowedOrigins: corsOrigins,
+		SessionHandler:      sessionHandler,
+		GovernanceHandler:   governanceHandler,
+		AuditHandler:        auditHandler,
+		ServiceHandler:      serviceHandler,
+		PolicyHandler:       policyHandler,
+		ReportsHandler:      reportHandler,
+		DocStore:            docStore,
+		CommitVerifier:      commitVerifier,
+		Reconciler:          reconciler,
+		VerificationHandler: verificationHandler,
+		AuthHandler:         authHandler,
+		AdminHandler:        adminHandler,
+		AuthMiddleware:      authMw,
+		RateLimiter:         rateLimiter.Middleware,
+		Validator:           validator.ValidateMiddleware,
+		CORSAllowedOrigins:  corsOrigins,
 		ReadinessCheck: func() map[string]string {
 			if err := sqliteClient.Ping(context.Background()); err != nil {
 				return map[string]string{"database": "error"}
@@ -285,7 +308,8 @@ func runPostgresMode() {
 	decisionStore := database.NewDecisionStore(pgClient)
 	commitStore := database.NewCommitStore(pgClient)
 	docStore := database.NewPgDocStore(pgClient)
-	reconciler := enforcement.NewReconciler(commitStore, database.NewPgFindingStore(pgClient))
+	findingStore := database.NewPgFindingStore(pgClient)
+	reconciler := enforcement.NewReconciler(commitStore, findingStore)
 	policyDefinitionStore := database.NewPolicyDefinitionStore(pgClient)
 
 	// Initialize unified policy engine with database policies + base Rego policy
@@ -300,6 +324,46 @@ func runPostgresMode() {
 		}
 	}
 	unifiedPolicyEngine := governance.NewUnifiedPolicyEngine(policyStoreAdapter, regoPath)
+
+	// Behavioral verification (#20): when a require_behavioral_verification
+	// policy is enabled, the merge gate additionally requires a passed
+	// attestation from an independent runner. The builtin gives agents
+	// advisory feedback at check_action time.
+	verificationStore := database.NewPgVerificationStore(pgClient)
+	behavioralRequired := func(ctx context.Context) bool {
+		defs, err := policyStoreAdapter.ListEnabled(ctx)
+		if err != nil {
+			return false
+		}
+		for _, d := range defs {
+			if d.BuiltinName == "require_behavioral_verification" {
+				return true
+			}
+		}
+		return false
+	}
+	commitVerifier := verification.NewGateVerifier(commitStore, verificationStore, behavioralRequired)
+	unifiedPolicyEngine.SetBehavioralChecker(func(commitSHA string) (bool, string) {
+		v, err := verificationStore.GetBySHA(context.Background(), commitSHA)
+		if err != nil || v == nil {
+			return false, "missing behavioral verification: no attested build/test run for this commit"
+		}
+		if v.Status != verification.StatusPassed {
+			return false, "behavioral verification failed for this commit"
+		}
+		return true, ""
+	})
+	verificationHandler := handlers.NewVerificationHandler(
+		verificationStore, verificationStore,
+		func(ctx context.Context, sha string) (string, error) {
+			rec, err := commitStore.GetBySHA(ctx, sha)
+			if err != nil {
+				return "", err
+			}
+			return rec.SessionID, nil
+		},
+		findingStore, commitStore.IsCommitVerified, behavioralRequired,
+	)
 
 	// Initialize handlers
 	sessionHandler := handlers.NewSessionHandler(sessionStore)
@@ -378,21 +442,22 @@ func runPostgresMode() {
 
 	// Initialize Router with handlers
 	router := api.NewRouter(api.RouterConfig{
-		SessionHandler:     sessionHandler,
-		ServiceHandler:     serviceHandler,
-		GovernanceHandler:  governanceHandler,
-		AuditHandler:       auditHandler,
-		ReportsHandler:     reportHandler,
-		PolicyHandler:      policyHandler,
-		CommitVerifier:     commitStore,
-		Reconciler:         reconciler,
-		DocStore:           docStore,
-		AuthHandler:        pgAuthHandler,
-		AdminHandler:       pgAdminHandler,
-		AuthMiddleware:     pgAuthMw,
-		RateLimiter:        pgRateLimiter.Middleware,
-		Validator:          pgValidator.ValidateMiddleware,
-		CORSAllowedOrigins: cfg.Server.CORSAllowedOrigins,
+		SessionHandler:      sessionHandler,
+		ServiceHandler:      serviceHandler,
+		GovernanceHandler:   governanceHandler,
+		AuditHandler:        auditHandler,
+		ReportsHandler:      reportHandler,
+		PolicyHandler:       policyHandler,
+		CommitVerifier:      commitVerifier,
+		Reconciler:          reconciler,
+		DocStore:            docStore,
+		VerificationHandler: verificationHandler,
+		AuthHandler:         pgAuthHandler,
+		AdminHandler:        pgAdminHandler,
+		AuthMiddleware:      pgAuthMw,
+		RateLimiter:         pgRateLimiter.Middleware,
+		Validator:           pgValidator.ValidateMiddleware,
+		CORSAllowedOrigins:  cfg.Server.CORSAllowedOrigins,
 		ReadinessCheck: func() map[string]string {
 			if err := pgClient.Ping(context.Background()); err != nil {
 				return map[string]string{"database": "error"}
