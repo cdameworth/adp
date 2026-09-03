@@ -56,6 +56,7 @@ func (a *PgSessionAdapter) Create(ctx context.Context, input store.CreateSession
 		ServiceScope:   scopeUUIDs,
 		ExpiresAt:      input.ExpiresAt,
 		Metadata:       database.Metadata(input.Metadata),
+		TokenHash:      input.TokenHash,
 	})
 	if err != nil {
 		return nil, err
@@ -96,11 +97,11 @@ func (a *PgSessionAdapter) ListEnded(ctx context.Context, afterID string, limit 
 	return results, nil
 }
 
+// ValidateToken delegates to the PG session store, which now persists token
+// hashes (migration 000006). Parity with the SQLite store is enforced by the
+// session-token conformance test in internal/infrastructure/database (#12).
 func (a *PgSessionAdapter) ValidateToken(ctx context.Context, sessionID, tokenHash string) (bool, error) {
-	// PostgreSQL session store does not yet store token hashes.
-	// When the PG schema is migrated to include token_hash, implement proper validation.
-	// For now, skip validation in PG mode (sidecar is primarily used locally with SQLite).
-	return true, nil
+	return a.pg.ValidateToken(ctx, sessionID, tokenHash)
 }
 
 func pgSessionToStore(pg *database.Session) *store.Session {

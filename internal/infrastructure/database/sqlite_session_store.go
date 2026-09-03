@@ -390,10 +390,12 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, input SQLite
 }
 
 // ValidateToken checks if the given token hash belongs to an active session.
+// The empty-hash guard prevents sessions created without a token from
+// validating against an empty presented hash (#12).
 func (s *SQLiteSessionStore) ValidateToken(ctx context.Context, sessionID, tokenHash string) (bool, error) {
 	var count int
 	err := s.client.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM agent_sessions WHERE id = ? AND token_hash = ? AND status = 'active'",
+		"SELECT COUNT(*) FROM agent_sessions WHERE id = ? AND token_hash = ? AND status = 'active' AND token_hash != ''",
 		sessionID, tokenHash,
 	).Scan(&count)
 	if err != nil {

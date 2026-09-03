@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/adp/adp/internal/sensitivepaths"
 	"github.com/adp/adp/internal/store"
 )
 
@@ -226,39 +227,8 @@ func (h *HookHTTPHandler) validateSessionToken(r *http.Request, sessionID string
 	return nil
 }
 
-// hookIsSensitivePath checks if a file path is sensitive.
-// Duplicated from internal/api/handlers/audit.go to avoid importing the handlers package.
+// hookIsSensitivePath checks if a file path is sensitive using the canonical
+// sensitivepaths matcher (single source of truth; see #15).
 func hookIsSensitivePath(path string) bool {
-	sensitivePaths := []string{
-		".env",
-		".secrets",
-		"credentials",
-		"secrets.yaml",
-		"secrets.json",
-		".aws",
-		".ssh",
-		"id_rsa",
-		"private_key",
-		"service_account",
-	}
-
-	for _, sensitive := range sensitivePaths {
-		if len(path) >= len(sensitive) &&
-			(path == sensitive ||
-				path[len(path)-len(sensitive):] == sensitive ||
-				hookContainsSubstring(path, "/"+sensitive) ||
-				hookContainsSubstring(path, sensitive+"/")) {
-			return true
-		}
-	}
-	return false
-}
-
-func hookContainsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return sensitivepaths.IsSensitive(path)
 }

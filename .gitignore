@@ -95,3 +95,7 @@ policies/*.bundle
 # ── Helm packaging output ───────────────────────
 deploy/helm/adp/charts/
 deploy/helm/adp/*.tgz
+
+# Python
+__pycache__/
+*.pyc

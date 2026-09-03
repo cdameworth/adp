@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/adp/adp/internal/infrastructure/database"
+	"github.com/adp/adp/internal/sensitivepaths"
 	"github.com/google/uuid"
 )
 
@@ -340,47 +341,8 @@ func (h *AuditHandler) VerifyCommit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isSensitivePath checks if a path is sensitive
+// isSensitivePath checks if a path is sensitive using the canonical
+// sensitivepaths matcher (single source of truth; see #15).
 func isSensitivePath(path string) bool {
-	sensitivePaths := []string{
-		".env",
-		".secrets",
-		"credentials",
-		"secrets.yaml",
-		"secrets.json",
-		".aws",
-		".ssh",
-		"id_rsa",
-		"private_key",
-		"service_account",
-	}
-
-	for _, sensitive := range sensitivePaths {
-		if len(path) >= len(sensitive) &&
-			(path == sensitive ||
-				path[len(path)-len(sensitive):] == sensitive ||
-				containsSubstring(path, "/"+sensitive) ||
-				containsSubstring(path, sensitive+"/")) {
-			return true
-		}
-	}
-
-	// Extension-based checks for certificate/key files
-	sensitiveExtensions := []string{".pem", ".key"}
-	for _, ext := range sensitiveExtensions {
-		if len(path) >= len(ext) && path[len(path)-len(ext):] == ext {
-			return true
-		}
-	}
-
-	return false
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return sensitivepaths.IsSensitive(path)
 }

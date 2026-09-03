@@ -761,50 +761,11 @@ func TestBuiltin_RateLimitAPI(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 7. matchesPattern helper
+// 7. Pattern matching
 // ---------------------------------------------------------------------------
-
-func TestMatchesPattern(t *testing.T) {
-	tests := []struct {
-		path    string
-		pattern string
-		want    bool
-	}{
-		// Suffix patterns (*.ext)
-		{"database.secret", "*.secret", true},
-		{"my.secret", "*.secret", true},
-		{"secret", "*.secret", false},
-		{"secret.txt", "*.secret", false},
-
-		// Prefix patterns (credentials.*)
-		{"credentials.json", "credentials.*", true},
-		{"credentials.yaml", "credentials.*", true},
-		{"not_credentials.json", "credentials.*", false},
-
-		// Exact match via filepath.Match on basename
-		{".env", ".env", true},
-		{"config/.env", ".env", true},
-		// ".pem" and ".key" are exact-match patterns, NOT suffix globs
-		{"server.pem", ".pem", false},
-		{"private.key", ".key", false},
-		{".pem", ".pem", true}, // exact basename match works
-		{".key", ".key", true}, // exact basename match works
-
-		// Wildcard patterns for full suffix matching
-		{"server.pem", "*.pem", true},
-		{"private.key", "*.key", true},
-	}
-
-	for _, tt := range tests {
-		name := tt.path + " ~ " + tt.pattern
-		t.Run(name, func(t *testing.T) {
-			got := matchesPattern(tt.path, tt.pattern)
-			if got != tt.want {
-				t.Errorf("matchesPattern(%q, %q) = %v, want %v", tt.path, tt.pattern, got, tt.want)
-			}
-		})
-	}
-}
+//
+// Pattern-matching semantics moved to internal/sensitivepaths (canonical
+// implementation + ~45-fixture table test there). matchesPattern was removed.
 
 // ---------------------------------------------------------------------------
 // 8. Engine: nil PolicyStore

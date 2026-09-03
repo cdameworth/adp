@@ -19,6 +19,32 @@ agent ── tools/call ──► AgentCore Gateway ──(REQUEST interceptor)�
                                         no  → block (agent gets an error)
 ```
 
+## Trust model: fail closed, one explicit escape hatch (#13)
+
+The interceptor **fails closed on every failure mode**: ADP unreachable,
+timeout, 5xx/4xx, malformed JSON, or a response missing `allowed: true` all
+block the tool call. Governance checks use a single short-timeout attempt
+(3s) — retries would multiply agent latency.
+
+Deny reasons are prefixed so alerting can distinguish them:
+
+- `policy_denied:` — ADP evaluated the action and denied it (or it awaits
+  human approval). Expected; not an outage.
+- `governance_unavailable:` — ADP could not produce an answer. **Page on
+  this.** While it persists, governed tools are unusable — that is the cost
+  of a governance layer that means what it says.
+
+**Escape hatch (development only):** setting `ADP_INTERCEPTOR_FAIL_OPEN=1`
+passes tool calls through when governance is unreachable, logging a WARNING
+for every bypassed call. Policy decisions that *were* returned still apply —
+fail-open covers outages, not denials. Never set it in production.
+
+`ADP_URL` is required. If unset, all tool calls deny with
+`governance_unavailable:` (unless fail-open is active).
+
+The failure matrix is enforced by tests: `python3 -m unittest discover -s
+integrations/agentcore` (21 cases covering each failure mode above).
+
 ## Deploy
 
 1. Package and create the Lambda (`interceptor.py`, handler

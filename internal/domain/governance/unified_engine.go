@@ -3,11 +3,10 @@ package governance
 import (
 	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/adp/adp/internal/sensitivepaths"
 	"github.com/open-policy-agent/opa/rego"
 )
 
@@ -107,21 +106,22 @@ func NewUnifiedPolicyEngine(policyStore PolicyStore, basePolicyPath string) *Uni
 
 // registerBuiltinPolicies registers all built-in policy evaluators
 func (e *UnifiedPolicyEngine) registerBuiltinPolicies() {
-	// Deny sensitive files
+	// Deny sensitive files. The canonical pattern set and matching semantics
+	// live in internal/sensitivepaths (single source of truth, mirrored in
+	// policies/default.rego). Config "patterns" replaces the default set.
 	e.builtinPolicies["deny_sensitive_files"] = func(input *EvaluationInput, config map[string]interface{}) (bool, string) {
-		patterns := []string{".env", "*.pem", "*.key", "*.secret", "credentials.*"}
+		match := sensitivepaths.Match
 		if configPatterns, ok := config["patterns"].([]interface{}); ok {
-			patterns = make([]string, len(configPatterns))
+			patterns := make([]string, len(configPatterns))
 			for i, p := range configPatterns {
 				patterns[i] = fmt.Sprintf("%v", p)
 			}
+			match = func(p string) (bool, string) { return sensitivepaths.MatchWith(patterns, p) }
 		}
 
 		for _, path := range input.Action.Target.Paths {
-			for _, pattern := range patterns {
-				if matchesPattern(path, pattern) {
-					return false, fmt.Sprintf("access to sensitive file '%s' blocked by pattern '%s'", path, pattern)
-				}
+			if blocked, pattern := match(path); blocked {
+				return false, fmt.Sprintf("access to sensitive file '%s' blocked by pattern '%s'", path, pattern)
 			}
 		}
 		return true, ""
@@ -467,30 +467,4 @@ func (e *UnifiedPolicyEngine) InvalidateCache() {
 	e.mu.Lock()
 	e.cacheExpiry = time.Time{}
 	e.mu.Unlock()
-}
-
-// Helper function to match file patterns
-func matchesPattern(path, pattern string) bool {
-	// Simple pattern matching
-	if strings.HasPrefix(pattern, "*") {
-		return strings.HasSuffix(path, pattern[1:])
-	}
-	if strings.HasSuffix(pattern, "*") {
-		return strings.HasPrefix(path, pattern[:len(pattern)-1])
-	}
-	if strings.Contains(pattern, "**") {
-		// Recursive glob - just check if the base matches
-		base := strings.ReplaceAll(pattern, "**", "")
-		return strings.Contains(path, strings.Trim(base, "/"))
-	}
-
-	// Use filepath.Match for standard globs
-	matched, _ := filepath.Match(pattern, filepath.Base(path))
-	if matched {
-		return true
-	}
-
-	// Also check full path
-	matched, _ = filepath.Match(pattern, path)
-	return matched
 }

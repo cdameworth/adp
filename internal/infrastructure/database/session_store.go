@@ -27,6 +27,9 @@ type Session struct {
 	ExpiresAt      time.Time   `json:"expires_at"`
 	LastHeartbeat  *time.Time  `json:"last_heartbeat,omitempty"`
 	Metadata       Metadata    `json:"metadata,omitempty"`
+	// TokenHash is the SHA-256 hex of the session token. Write/validate only;
+	// never serialized (json:"-") and never returned by read queries.
+	TokenHash string `json:"-"`
 }
 
 // Metadata holds arbitrary key-value pairs for sessions.
@@ -54,6 +57,7 @@ type CreateSessionInput struct {
 	ServiceScope   []uuid.UUID
 	ExpiresAt      time.Time
 	Metadata       Metadata
+	TokenHash      string
 }
 
 // Create creates a new session.
@@ -101,8 +105,8 @@ func (s *SessionStore) Create(ctx context.Context, input CreateSessionInput) (*S
 	query := `
 		INSERT INTO agent_sessions (
 			id, organization_id, user_id, tool, trust_level,
-			capabilities, constraints, service_scope, status, expires_at, metadata
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			capabilities, constraints, service_scope, status, expires_at, metadata, token_hash
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING started_at`
 
 	var startedAt time.Time
@@ -118,6 +122,7 @@ func (s *SessionStore) Create(ctx context.Context, input CreateSessionInput) (*S
 		"active",
 		input.ExpiresAt,
 		metadataJSON,
+		input.TokenHash,
 	).Scan(&startedAt)
 
 	if err != nil {
@@ -140,6 +145,7 @@ func (s *SessionStore) Create(ctx context.Context, input CreateSessionInput) (*S
 		StartedAt:      startedAt,
 		ExpiresAt:      input.ExpiresAt,
 		Metadata:       input.Metadata,
+		TokenHash:      input.TokenHash,
 	}, nil
 }
 
@@ -474,6 +480,26 @@ func (s *SessionStore) Delete(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+// ValidateToken reports whether tokenHash belongs to the named active session.
+// Mirrors SQLiteSessionStore.ValidateToken so git-hook/sidecar token checks
+// behave identically on both stores (#12). Fails closed: any error or a
+// mismatch returns false; sessions created without a token hash can never
+// validate (empty-hash self-match is explicitly excluded).
+func (s *SessionStore) ValidateToken(ctx context.Context, sessionID, tokenHash string) (bool, error) {
+	if tokenHash == "" {
+		return false, nil
+	}
+	var count int
+	err := s.client.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM agent_sessions WHERE id = $1 AND token_hash = $2 AND status = 'active' AND token_hash <> ''",
+		sessionID, tokenHash,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to validate token: %w", err)
+	}
+	return count > 0, nil
 }
 
 // ExpireStaleSessions marks sessions as expired based on their expiration time.
