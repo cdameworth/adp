@@ -19,6 +19,10 @@ type FindingType string
 
 const (
 	FindingUngovernedCommit FindingType = "ungoverned_commit"
+	// FindingSelfAttestation flags a behavioral attestation whose session_id
+	// matches the session that prepared the commit — the same trust domain
+	// attempting to attest its own work (#20).
+	FindingSelfAttestation FindingType = "self_attestation_attempt"
 )
 
 // FindingStatus is the lifecycle of a finding.

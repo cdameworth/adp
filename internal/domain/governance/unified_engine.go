@@ -84,6 +84,9 @@ type UnifiedPolicyEngine struct {
 	cachedPolicies  []*PolicyDefinition
 	cacheExpiry     time.Time
 	cacheDuration   time.Duration
+	// behavioralChecker backs the require_behavioral_verification builtin
+	// (#20). Nil disables the check (advisory builtin no-ops).
+	behavioralChecker func(commitSHA string) (bool, string)
 }
 
 // BuiltinEvaluator is a function that evaluates a built-in policy
@@ -125,6 +128,27 @@ func (e *UnifiedPolicyEngine) registerBuiltinPolicies() {
 			}
 		}
 		return true, ""
+	}
+
+	// Behavioral verification (#20): advisory feedback when an agent checks a
+	// commit-finalizing action. The head SHA is only known post-commit, so
+	// absence is allowed here — the merge gate enforces the requirement
+	// server-side via verification.GateVerifier.
+	e.builtinPolicies["require_behavioral_verification"] = func(input *EvaluationInput, config map[string]interface{}) (bool, string) {
+		checker := e.behavioralChecker
+		if checker == nil {
+			return true, ""
+		}
+		switch input.Action.Type {
+		case "verify_commit", "push", "merge":
+		default:
+			return true, ""
+		}
+		sha, _ := input.Action.Metadata["commit_sha"].(string)
+		if sha == "" {
+			return true, "" // head SHA unknown pre-commit; gate enforces later
+		}
+		return checker(sha)
 	}
 
 	// Blast radius limit
@@ -265,6 +289,13 @@ func (e *UnifiedPolicyEngine) registerBuiltinPolicies() {
 		// For now, just return allowed
 		return true, ""
 	}
+}
+
+// SetBehavioralChecker installs the checker used by the
+// require_behavioral_verification builtin. The checker answers: does this
+// commit SHA carry a passed attestation from an independent runner?
+func (e *UnifiedPolicyEngine) SetBehavioralChecker(fn func(commitSHA string) (bool, string)) {
+	e.behavioralChecker = fn
 }
 
 // Evaluate evaluates all enabled policies against the input

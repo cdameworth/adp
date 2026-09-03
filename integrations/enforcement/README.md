@@ -73,9 +73,8 @@ observed commits, ADP flags any without a governance trail as an
    the `adp.enforcement.read` / `adp.enforcement.resolve` permissions).
 
 Notes:
-- adp-server wires a reconciler in both modes; findings are kept **in-memory**
-  (bounded) — swap in a persistent `FindingStore` (`internal/domain/enforcement`)
-  for durability across restarts.
+- adp-server wires a reconciler in both modes; findings are **persisted**
+  (SQLite and PostgreSQL stores) as of the store-parity release.
 - Any system that can list commits can feed
   `POST /v1/enforcement/commits/observed` with `{commits:[{sha,repo,ref,author}]}`,
   not just GitHub.
@@ -91,3 +90,31 @@ Notes:
 
 For agent *tool calls* (not git), the equivalent non-bypassable chokepoint is the
 AgentCore Gateway REQUEST interceptor — see `integrations/agentcore/`.
+
+## Behavioral verification (attested build/test evidence) — #20
+
+Governance proves a commit *went through policy*; it does not prove the change
+*works*. Behavioral verification closes that: CI (a trust domain the agent
+does not control) runs the real build + tests and posts an attestation. When
+the `require_behavioral_verification` policy is enabled, the merge gate
+requires a **passed attestation for the head SHA** in addition to a
+governance trail.
+
+1. Copy [`attest.yml`](./attest.yml) to `.github/workflows/adp-attest.yml` and
+   wire secrets `ADP_URL` + `ADP_VERIFICATION_KEY` (per-repo key, created by an
+   admin via `POST /v1/verification-keys`).
+2. Keep the gate workflow as the required check — it now fails until both the
+   governance trail and the attestation exist.
+
+Trust rules enforced server-side:
+
+- Attestations authenticate with a **per-repo verification key**, never the
+  agent's session token.
+- An attestation whose `session_id` matches the session that prepared the
+  commit is **rejected** and recorded as a `self_attestation_attempt` finding.
+- Failed runs are attested too (`if: always()`) — failure is evidence.
+
+Known boundary (v1): this proves an independent runner saw green; it does not
+prove the tests were honest (agents can weaken tests). Test-gaming detection
+(holdout scenarios, mutation testing) is the ephemeral-environment work
+tracked in #21.
