@@ -68,7 +68,7 @@ func runSQLiteMode() {
 	decisionStore := database.NewSQLiteDecisionStore(sqliteClient)
 	commitStore := database.NewSQLiteCommitStore(sqliteClient)
 	docStore := database.NewSQLiteDocStore(sqliteClient)
-	reconciler := enforcement.NewReconciler(commitStore, enforcement.NewInMemoryFindingStore(0))
+	reconciler := enforcement.NewReconciler(commitStore, database.NewSQLiteFindingStore(sqliteClient))
 
 	// Create SQLite-backed handlers
 	sessionHandler := handlers.NewSQLiteSessionHandler(sessionStore)
@@ -284,7 +284,8 @@ func runPostgresMode() {
 	escalationStore := database.NewEscalationStore(pgClient)
 	decisionStore := database.NewDecisionStore(pgClient)
 	commitStore := database.NewCommitStore(pgClient)
-	reconciler := enforcement.NewReconciler(commitStore, enforcement.NewInMemoryFindingStore(0))
+	docStore := database.NewPgDocStore(pgClient)
+	reconciler := enforcement.NewReconciler(commitStore, database.NewPgFindingStore(pgClient))
 	policyDefinitionStore := database.NewPolicyDefinitionStore(pgClient)
 
 	// Initialize unified policy engine with database policies + base Rego policy
@@ -385,6 +386,7 @@ func runPostgresMode() {
 		PolicyHandler:      policyHandler,
 		CommitVerifier:     commitStore,
 		Reconciler:         reconciler,
+		DocStore:           docStore,
 		AuthHandler:        pgAuthHandler,
 		AdminHandler:       pgAdminHandler,
 		AuthMiddleware:     pgAuthMw,

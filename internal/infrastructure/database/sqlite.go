@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS documentation (
     FOREIGN KEY (session_id) REFERENCES agent_sessions(id)
 );
 
+CREATE TABLE IF NOT EXISTS findings (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    reference TEXT NOT NULL,
+    repo TEXT DEFAULT '',
+    ref TEXT DEFAULT '',
+    author TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'acknowledged', 'resolved')),
+    detected_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (type, reference)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON agent_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_sessions_org ON agent_sessions(organization_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON agent_sessions(started_at);
@@ -113,6 +127,9 @@ CREATE INDEX IF NOT EXISTS idx_escalations_session ON escalation_requests(sessio
 CREATE INDEX IF NOT EXISTS idx_escalations_status ON escalation_requests(status);
 CREATE INDEX IF NOT EXISTS idx_docs_category ON documentation(category);
 CREATE INDEX IF NOT EXISTS idx_docs_session ON documentation(session_id);
+
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+CREATE INDEX IF NOT EXISTS idx_findings_detected ON findings(detected_at);
 
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
