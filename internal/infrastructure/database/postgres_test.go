@@ -333,15 +333,11 @@ func TestContextTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
 
-	// Wait for context to expire
-	time.Sleep(2 * time.Millisecond)
+	// Block until the deadline fires — no sleep/select race: the context is
+	// guaranteed to expire, so this is deterministic even on loaded CI runners.
+	<-ctx.Done()
 
-	select {
-	case <-ctx.Done():
-		if ctx.Err() != context.DeadlineExceeded {
-			t.Errorf("Expected DeadlineExceeded, got %v", ctx.Err())
-		}
-	default:
-		t.Error("Expected context to be done")
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Errorf("Expected DeadlineExceeded, got %v", ctx.Err())
 	}
 }

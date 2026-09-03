@@ -209,6 +209,7 @@ func runPostgresMode() {
 	}
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+	logger.Info("Configuration loaded", "environment", cfg.Environment)
 
 	// Initialize Neo4j (optional — not required for core API endpoints)
 	neo4jStore, err := database.NewNeo4jStore(cfg.Database.Neo4j.URI, cfg.Database.Neo4j.Username, cfg.Database.Neo4j.Password)
@@ -246,11 +247,7 @@ func runPostgresMode() {
 		pgConfig.MaxLifetime = 5 * time.Minute
 	}
 
-	pgClient, err := database.NewPostgresClient(pgConfig)
-	if err != nil {
-		logger.Error("Failed to initialize PostgreSQL", "error", err)
-		os.Exit(1)
-	}
+	pgClient := mustConnectPostgres(pgConfig, logger)
 	defer pgClient.Close()
 
 	// Run PostgreSQL migrations
@@ -263,11 +260,12 @@ func runPostgresMode() {
 			migrationsDir = "migrations/postgres"
 		}
 	}
+	migrateStart := time.Now()
 	if err := pgClient.RunMigrations(context.Background(), migrationsDir); err != nil {
 		logger.Error("Failed to run PostgreSQL migrations", "error", err, "dir", migrationsDir)
 		os.Exit(1)
 	}
-	logger.Info("PostgreSQL migrations applied", "dir", migrationsDir)
+	logger.Info("PostgreSQL migrations applied", "dir", migrationsDir, "took", time.Since(migrateStart).Round(time.Millisecond))
 
 	// Initialize ClickHouse for reporting
 	chConfig := &database.ClickHouseConfig{
@@ -486,9 +484,62 @@ func runPostgresMode() {
 	if port == "" {
 		port = fmt.Sprintf("%d", cfg.Server.Port)
 	}
-	logger.Info("Starting ADP server", "port", port)
+	logger.Info("Starting ADP server", "port", port, "healthcheck", "/health")
 	if err := http.ListenAndServe(":"+port, router); err != nil {
 		logger.Error("Server failed to start", "error", err)
 		os.Exit(1)
 	}
+}
+
+// connectPostgresWithRetry attempts to reach PostgreSQL until the budget is
+// exhausted. Platforms like Railway cold-start databases and propagate private
+// DNS slowly; failing on the first attempt turns a transient delay into a
+// crash loop ("replicas never became healthy"). The budget intentionally
+// exceeds the client's internal 10s ping timeout.
+var (
+	pgConnectBudget   = 90 * time.Second
+	pgConnectInterval = 2 * time.Second
+)
+
+func connectPostgresWithRetry(cfg database.PostgresConfig, logger *slog.Logger) (*database.PostgresClient, error) {
+	deadline := time.Now().Add(pgConnectBudget)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		client, err := database.NewPostgresClient(cfg)
+		if err == nil {
+			if attempt > 1 {
+				logger.Info("PostgreSQL connected after retries", "attempts", attempt)
+			}
+			return client, nil
+		}
+		lastErr = err
+		if time.Now().Add(pgConnectInterval).After(deadline) {
+			return nil, lastErr
+		}
+		if attempt%5 == 1 {
+			logger.Warn("PostgreSQL not reachable yet; retrying", "attempt", attempt, "error", lastErr)
+		}
+		time.Sleep(pgConnectInterval)
+	}
+}
+
+// mustConnectPostgres validates configuration, connects with retry, and exits
+// with an actionable log line on failure.
+func mustConnectPostgres(cfg database.PostgresConfig, logger *slog.Logger) *database.PostgresClient {
+	if cfg.DatabaseURL == "" && cfg.Host == "" {
+		logger.Error("No PostgreSQL configuration found — set ADP_DATABASE_POSTGRES_HOST/PORT/DATABASE/USERNAME/PASSWORD or ADP_DATABASE_POSTGRES_DATABASE_URL. For a zero-dependency deploy, set ADP_STORE=sqlite instead")
+		os.Exit(1)
+	}
+	target := fmt.Sprintf("host=%s port=%d db=%s sslmode=%s", cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode)
+	if cfg.DatabaseURL != "" {
+		target = "via ADP_DATABASE_POSTGRES_DATABASE_URL"
+	}
+	logger.Info("Connecting to PostgreSQL", "target", target)
+	client, err := connectPostgresWithRetry(cfg, logger)
+	if err != nil {
+		logger.Error("Failed to initialize PostgreSQL after retries", "target", target, "error", err,
+			"hint", "check host/port/credentials, that the database is running, and sslmode (private Railway networking does not support TLS — use sslmode=disable there; use require only on the public proxy)")
+		os.Exit(1)
+	}
+	return client
 }

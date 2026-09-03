@@ -39,8 +39,12 @@ Set these environment variables on the `api` service:
 | `ADP_DATABASE_POSTGRES_DATABASE` | `railway` | Railway's default DB name |
 | `ADP_DATABASE_POSTGRES_USERNAME` | `postgres` | Railway's default user |
 | `ADP_DATABASE_POSTGRES_PASSWORD` | `<from Railway PG>` | Use Railway's `PGPASSWORD` reference |
-| `ADP_DATABASE_POSTGRES_SSLMODE` | `require` | Required for production |
+| `ADP_DATABASE_POSTGRES_SSLMODE` | `require` | Public proxy only — see Troubleshooting |
 | `ADP_CORS_ALLOWED_ORIGINS` | `https://<dashboard>.railway.app` | Dashboard URL |
+
+A single `ADP_DATABASE_POSTGRES_DATABASE_URL` (Railway's `DATABASE_URL`
+reference) works instead of the discrete host/port/name/user/password
+variables and takes precedence when both are set.
 
 ### Local Auth (Recommended)
 
@@ -89,7 +93,7 @@ Or push to a connected GitHub repository for automatic deployments.
 - [x] `ADP_API_KEY` set to a strong random value
 - [x] `ADP_JWT_SECRET` set to a strong random value (enables user auth)
 - [x] `NEXTAUTH_SECRET` set on dashboard service
-- [x] `ADP_DATABASE_POSTGRES_SSLMODE=require`
+- [x] `ADP_DATABASE_POSTGRES_SSLMODE` correct for your endpoint (see below)
 - [x] `ADP_ENVIRONMENT=production`
 - [x] `ADP_CORS_ALLOWED_ORIGINS` restricted to dashboard domain
 - [x] First `POST /v1/auth/register` creates the admin account
@@ -101,6 +105,33 @@ Or push to a connected GitHub repository for automatic deployments.
 - `GET /ready` — checks database connectivity, returns 503 if unhealthy
 
 ## Troubleshooting
+
+### "1/1 replicas never became healthy!"
+
+The container starts but Railway's HTTP check against `/health` never
+succeeds. In order of likelihood:
+
+1. **Startup took longer than the healthcheck window.** PG connect +
+   migrations on a cold network can exceed a short `healthcheckTimeout`.
+   `railway.toml` sets 180s — if your project overrides it, raise it.
+2. **PostgreSQL unreachable or misconfigured.** The server retries PG for 90s
+   and logs the non-secret target (`host`, `port`, `db`, `sslmode`) on every
+   attempt. Open the deploy logs and read the `Connecting to PostgreSQL`
+   line — 90% of these incidents are a wrong host reference or SSL mode:
+   - **`postgres.railway.internal` (private network): no TLS.** Use
+     `ADP_DATABASE_POSTGRES_SSLMODE=disable` there.
+   - **`*.proxy.rlwy.net` (public TCP proxy): TLS required.** Use
+     `ADP_DATABASE_POSTGRES_SSLMODE=require` there.
+   - Mixing those up produces connection failures that look like a dead app.
+3. **No PG variables at all.** The server exits with an explicit
+   "No PostgreSQL configuration found" message naming the expected variables.
+   For a zero-dependency smoke deploy, set `ADP_STORE=sqlite` instead (data
+   lives on the container's ephemeral disk unless you attach a volume).
+4. **Crash before bind.** Any `Failed to initialize ...` / `Failed to run
+   PostgreSQL migrations` line in the deploy log names the failing stage;
+   migration duration is logged so a slow migration is visible.
+
+### Other issues
 
 **Build fails with architecture error**: Ensure `TARGETARCH` is not overridden. The Dockerfile defaults to `amd64` which matches Railway's infrastructure.
 
