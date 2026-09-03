@@ -1,121 +1,97 @@
-# Agent Developer Portal (ADP)
+# Proctor
 
-**Governance and audit infrastructure for AI coding agents, delivered via MCP.**
+**Provenance, policy, and proof for AI coding agents — delivered over MCP.**
 
-[![Go 1.25](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](https://go.dev/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Status: Alpha](https://img.shields.io/badge/Status-Alpha-orange)]()
+> Formerly ADP (Agent Developer Portal). See [REBRAND.md](REBRAND.md) for the rename plan.
 
 ---
 
-## What is ADP?
+## The problem
 
-ADP is a policy engine and audit trail that sits between AI coding agents and the code they modify. It connects to agents like Claude Code, Cursor, and Copilot via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) and enforces governance rules on every action an agent takes. Every decision -- allowed, denied, or escalated -- is logged with the agent's reasoning and the policy outcome.
+AI agents are writing and modifying production code. Three questions follow every agent-authored change, and today most teams can't answer any of them:
 
-## Why does this exist?
+1. **What did the agent decide, and why?** (provenance)
+2. **Was it allowed to do that?** (policy)
+3. **Does the change actually work?** (proof)
 
-AI agents are increasingly writing and modifying production code. Without governance, there is no visibility into what an agent changed, why it changed it, or whether the change complied with your team's policies. ADP provides:
+Access logs answer none of these. An MCP gateway can tell you a tool was called; it cannot tell you what the agent *reasoned*, which *policy* evaluated the action, which *human* approved it, or whether the resulting commit was *verified*. Proctor exists to close that gap.
 
-- **Policy enforcement** -- Define rules about what agents can and cannot do (trust levels, sensitive file protection, time-based restrictions, blast radius limits).
-- **Decision audit trail** -- Every agent action is logged with reasoning, confidence, and policy evaluation results.
-- **Human escalation** -- Restricted actions trigger an approval workflow instead of a silent failure or an unchecked execution.
+## What Proctor is
 
-## Current Status
+Proctor is governance infrastructure that sits between AI coding agents (Claude Code, Cursor, Copilot — anything that speaks MCP) and your codebase, with enforcement at the git boundary:
 
-**This project is in alpha.** It works, the tests pass, and the core loop (start session, check policy, log decision, audit) is functional. It is not production-hardened.
+- **Provenance — the decision ledger.** Every agent decision is logged with its reasoning, confidence score, alternatives considered, and policy outcome — and linked to the commit it produced. The audit object is the *decision*, not the tool call.
+- **Policy — enforcement with graduated trust.** Agents carry trust levels (1–5). OPA/Rego policies, sensitive-file protection, blast-radius limits, and time-based rules decide what happens autonomously, what gets denied, and what escalates to a human. Deny-by-default.
+- **Proof — the merge gate.** A server-side verify-batch endpoint and forge integration (GitHub Action) make "no ungoverned commit merges" a *required check*, not a convention. A reconciliation backstop scans history and flags any commit that bypassed governance. Behavioral verification (attested build/test evidence as a second merge gate) is in progress — see issues #20 and #21.
+- **Accountability — documentation for humans.** A documentation engine auto-generates session summaries, risk reports, and pattern reports from decision records, so engineering leads, security, and compliance can see what agents did without reading diffs.
 
-### What works today
+## Trust model (read this before deploying)
 
-- MCP server with 11 tools for agent integration
-- Unified policy engine (trust levels, blast radius analysis, time-based policies, sensitive file blocking)
-- Decision audit trail with reasoning and confidence tracking
-- Session management with heartbeats, expiration, and cryptographic session tokens
-- Escalation workflow for human approval of restricted actions
-- Documentation engine (auto-generated session summaries, risk reports, pattern reports)
-- SQLite as a zero-configuration default store
-- PostgreSQL as an optional production store
-- HTTP API with multiple auth methods (API key, external JWT/JWKS, built-in local JWT)
-- User management with RBAC (registration, login, admin user management)
-- Web dashboard with authentication (Next.js + NextAuth.js, wired to backend API)
-- Git hooks (pre-commit, post-commit, pre-push) with embedded HTTP sidecar
-- Security headers, CORS configuration, rate limiting
-- Docker Compose setup (full PostgreSQL stack and lightweight SQLite mode)
-- Railway deployment support
+Governance tools live or die on honest enforcement boundaries. Proctor's:
 
-### What is planned but not yet functional
+| Layer | Mechanism | Trust assumption |
+|---|---|---|
+| MCP server (11 tools) | Agents call `adp_check_action` before acting; decisions logged | Cooperative — an agent could act without asking |
+| Git hooks | pre-commit / post-commit / pre-push validate against the session audit trail | Local enforcement; token-verified, *audited* bypass |
+| Merge gate | `POST /v1/commits/verify-batch` as a required forge check | **Non-bypassable** — server-side, enforced by branch protection |
+| Reconciliation | Scans commit history, flags ungoverned commits as findings | Backstop — detects anything that slipped through |
 
-- Vector search for semantic context retrieval (Qdrant client exists but is a stub)
-- Graph-based decision lineage traversal (Neo4j writes exist, no query/read-back)
-- Kubernetes/Helm deployment (directory structure exists, manifests are incomplete)
-- Metrics and monitoring (Prometheus/Grafana configs exist, no working metrics endpoint)
-- SAML SSO (library imported, not integrated)
+**Known boundary:** Proctor governs what reaches git. An agent with unrestricted shell and network access could exfiltrate data without committing. Run agents in a sandboxed environment (e.g. Bedrock AgentCore — see `integrations/agentcore/`) for egress control; Proctor then guarantees the code boundary. See [docs/ENFORCEMENT_OPTIONS.md](docs/ENFORCEMENT_OPTIONS.md).
 
-## Quick Start
+## Quick start
 
-The fastest path is building the MCP server and pointing your agent at it. SQLite is the default store, so there is nothing else to set up.
-
-### 1. Build
+The MCP server uses SQLite by default — zero external services.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/cdameworth/adp.git
 cd adp
-
 go build ./cmd/adp-mcp
 go build ./cmd/adp-server   # optional: HTTP API server
-go build ./cmd/adp-cli      # optional: CLI tool
+go build ./cmd/adp-cli      # optional: CLI
 ```
 
-### 2. Configure your AI agent
-
-Add the MCP server to your agent's configuration. For Claude Code, add this to your MCP settings:
+Point your agent at it (Claude Code example):
 
 ```json
 {
   "mcpServers": {
-    "adp": {
+    "proctor": {
       "command": "/absolute/path/to/adp-mcp"
     }
   }
 }
 ```
 
-That is it. The MCP server uses SQLite by default and requires no external services.
+> Binary and module renames (`adp-*` → `proctor-*`) land with the repo rename — see REBRAND.md. Until then the binaries keep their `adp-*` names.
 
-### 3. Verify
+Watch governance happen:
 
-Once your agent connects, it will have access to 11 tools prefixed with `adp_`. The agent starts a session, checks actions against policy, and logs decisions -- all through the MCP protocol.
+```bash
+docker compose -f docker-compose.sqlite.yml up -d
+# open http://localhost:3002 — sessions, decisions, approvals
+```
 
-## MCP Tools
+## MCP tools
 
-These are the tools exposed to AI agents via the MCP server:
+| Tool | Purpose |
+|---|---|
+| `adp_start_session` / `adp_end_session` / `adp_heartbeat` | Governance session lifecycle with agent identity + trust level; sessions expire after 8h idle |
+| `adp_check_action` | Evaluate a proposed action against policy **before** execution — the primary enforcement call |
+| `adp_request_approval` / `adp_get_approval` | Async human escalation for actions above the agent's trust level |
+| `adp_log_decision` | Record a decision: reasoning, confidence, alternatives, outcome |
+| `adp_prepare_commit` / `adp_verify_commit` | Bind file changes to the audit trail; verify a commit against it |
+| `adp_get_context` | Token-budgeted task context (essential / task-relevant / supporting) |
+| `adp_get_docs` | Retrieve auto-generated documentation |
 
-| Tool | Description |
-|------|-------------|
-| `adp_start_session` | Initialize a governance session with agent identity and trust level |
-| `adp_end_session` | Close a governance session |
-| `adp_heartbeat` | Keep a session alive (sessions expire after 8 hours of inactivity) |
-| `adp_get_context` | Retrieve token-budgeted context for a task (essential, task-relevant, supporting) |
-| `adp_check_action` | Evaluate a proposed action against the policy engine before execution |
-| `adp_request_approval` | Request async human approval for actions that exceed the agent's trust level |
-| `adp_get_approval` | Poll the status of an approval request |
-| `adp_log_decision` | Record a decision with reasoning, confidence, alternatives considered, and outcome |
-| `adp_prepare_commit` | Register file changes before committing so the audit trail links to the commit |
-| `adp_verify_commit` | Verify a commit against the audit trail |
-| `adp_get_docs` | Retrieve auto-generated documentation from the documentation engine |
+## Policy engine
 
-## Policy Engine
+Unified engine, deny-by-default, evaluated per action:
 
-ADP uses a unified policy engine that combines several enforcement mechanisms:
-
-**Trust levels** -- Agents are assigned a trust level (1-5) that determines what actions they can perform autonomously. Lower trust levels require approval for more actions.
-
-**Sensitive file protection** -- Paths matching patterns like `.env*`, `secrets/**`, and `*.key` are blocked regardless of trust level.
-
-**Blast radius analysis** -- The engine estimates how many files and services an action could affect and can require approval for high-impact changes.
-
-**Time-based policies** -- Actions can be restricted based on time of day or day of week (for example, blocking production deployments at 3 AM).
-
-**OPA/Rego rules** -- The core policy logic is defined in `policies/default.rego` and evaluated using Open Policy Agent. You can extend or replace the default rules.
+- **Trust levels (1–5)** — autonomy scales with demonstrated reliability; reads are open, production deploys require level 5 or human approval.
+- **Sensitive-file protection** — credential and secret paths blocked at any trust level.
+- **Blast-radius analysis** — high-impact changes require approval.
+- **Time-based policies** — e.g. block production deploys 22:00–06:00.
+- **OPA/Rego** — extend or replace `policies/default.rego` with your own rules.
 
 ## Architecture
 
@@ -128,41 +104,24 @@ ADP uses a unified policy engine that combines several enforcement mechanisms:
 ┌────────────────────▼────────────────────────────┐
 │                adp-mcp                           │
 │     MCP server (11 tools) + HTTP sidecar         │
+│     (git-hook endpoints, no extra process)       │
 └────────────────────┬────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────┐
 │              Core Domain                         │
-│  ┌───────────┐ ┌───────────┐ ┌───────────┐      │
-│  │Governance │ │  Session   │ │   Audit   │      │
-│  │  Engine   │ │ Management │ │  Logger   │      │
-│  └───────────┘ └───────────┘ └───────────┘      │
-│  ┌───────────┐ ┌───────────┐                     │
-│  │  Context  │ │   Docs    │                     │
-│  │  Delivery │ │  Engine   │                     │
-│  └───────────┘ └───────────┘                     │
+│   Governance · Sessions · Audit · Context · Docs │
 └────────────────────┬────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────┐
-│                  Storage                         │
-│   SQLite (default)  or  PostgreSQL (production)  │
+│   SQLite (default)   or   PostgreSQL (scale)     │
 └──────────────────────────────────────────────────┘
 ```
 
-The `adp-mcp` binary includes an embedded HTTP sidecar (port 8081, configurable via `ADP_HTTP_PORT`) that serves git hook endpoints. Git hooks call the sidecar for commit validation — no separate server process needed.
-
-There is also an `adp-server` binary that exposes the full REST API with JWT authentication, intended for the web dashboard and non-MCP integrations.
+`adp-server` exposes the full REST API (JWT / API key / external JWKS auth, RBAC) for the dashboard and non-MCP integrations. An AWS Bedrock AgentCore Gateway target lives in `integrations/agentcore/`; a GitHub App (check runs, commit statuses, webhooks) lives in `internal/integrations/github/`; TechDocs/Backstage export in `internal/techdocs/`.
 
 ## Configuration
 
-ADP uses [Viper](https://github.com/spf13/viper) for configuration. You can use a `config.yaml` file or environment variables.
-
-### Minimal configuration (SQLite default)
-
-No configuration file is required. The MCP server works out of the box with SQLite.
-
-### PostgreSQL configuration
-
-To use PostgreSQL instead of SQLite, set these environment variables or add them to `config.yaml`:
+Works out of the box (SQLite). For PostgreSQL:
 
 ```bash
 ADP_STORE=postgres
@@ -173,156 +132,27 @@ ADP_DATABASE_POSTGRES_USERNAME=adp
 ADP_DATABASE_POSTGRES_PASSWORD=your-password
 ```
 
-### Server configuration
+Auth (pick one or combine): `ADP_API_KEY`, `ADP_JWT_SECRET` (built-in local JWT + user management), or `ADP_AUTH_JWKS_URL` (external SSO). See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for the full reference.
 
-```bash
-ADP_SERVER_PORT=8080              # HTTP API port (adp-server only)
-ADP_HTTP_PORT=8081                # HTTP sidecar port (adp-mcp, for git hooks)
-ADP_LOG_LEVEL=debug               # Log verbosity
-ADP_ENVIRONMENT=development       # development or production
-```
+## Status
 
-### Authentication configuration
+**Alpha — core loop is real and tested; hardening in progress.**
 
-```bash
-ADP_API_KEY=your-api-key          # Simple API key auth (X-API-Key header)
-ADP_JWT_SECRET=your-secret        # Enable built-in local JWT auth (registration, login)
-ADP_OPEN_REGISTRATION=true        # Allow public user signup (default: false)
-ADP_AUTH_JWKS_URL=https://...     # External JWKS endpoint for enterprise SSO
-ADP_CORS_ALLOWED_ORIGINS=https://dashboard.example.com  # Allowed CORS origins
-```
+Working today: MCP server, policy engine, decision ledger, sessions with cryptographic tokens, escalation workflow, documentation engine, git hooks, merge gate + reconciliation, HTTP API with RBAC, dashboard (SQLite mode), Docker Compose, GitHub Actions CI (build/vet/gofmt/test).
 
-### Docker Compose
+Honest gaps, tracked as issues:
 
-#### Option A: Full stack (PostgreSQL + all services)
+- **P0 trust fixes**: PG-mode token validation (#12), AgentCore fail-open path (#13), sensitive-path coverage (#15)
+- **Behavioral verification** as an attested second merge gate (#20, #21)
+- Decision-lineage graph queries — writes exist, read-back in progress (#4)
+- PG/SQLite feature parity (#10, #11); SAML end-to-end (#7); metrics endpoint (#6); Helm (#5)
 
-```bash
-docker compose up -d
-curl http://localhost:8080/health
-```
-
-#### Option B: Lightweight SQLite mode (recommended for greenfield)
-
-Uses the same `~/.adp/adp.db` that `adp-mcp` writes to. No PostgreSQL needed.
-
-```bash
-docker compose -f docker-compose.sqlite.yml up -d
-curl http://localhost:8080/health
-```
-
-### Greenfield Setup (MCP + Dashboard)
-
-For a new team getting started with ADP governance locally:
-
-```bash
-# 1. Build the MCP server
-go build ./cmd/adp-mcp
-
-# 2. Configure your agent to use adp-mcp (see "Configure your AI agent" above)
-
-# 3. Start the dashboard (reads the same SQLite DB as adp-mcp)
-docker compose -f docker-compose.sqlite.yml up -d
-
-# 4. Open http://localhost:3002 to see sessions, decisions, and approvals
-```
-
-The MCP server writes audit data to `~/.adp/adp.db`. The dashboard reads from the
-same file via `adp-server` running in SQLite mode. No configuration needed.
-
-**To use the full PostgreSQL stack instead** (if you need policies, reports, or multi-user):
-
-```bash
-# 1. Start the full stack
-docker compose up -d
-
-# 2. Point adp-mcp at PostgreSQL (the agent sets ADP_URL automatically from http_port)
-ADP_STORE=postgres \
-ADP_DATABASE_POSTGRES_HOST=localhost \
-ADP_DATABASE_POSTGRES_PASSWORD=adp_dev_password \
-./adp-mcp
-
-# 3. Open http://localhost:3002 — telemetry now flows through PostgreSQL to the UI
-```
-
-## Development
-
-### Prerequisites
-
-- Go 1.25+
-
-### Build and test
-
-```bash
-# Build all binaries
-go build ./cmd/adp-server
-go build ./cmd/adp-cli
-go build ./cmd/adp-mcp
-
-# Run all tests
-go test ./...
-
-# Lint
-go vet ./...
-```
-
-### Project structure
-
-```
-adp/
-├── cmd/
-│   ├── adp-server/         # HTTP API server
-│   ├── adp-cli/            # CLI tool
-│   └── adp-mcp/            # MCP server (primary integration point)
-├── internal/
-│   ├── api/                # HTTP handlers, middleware (JWT, RBAC, API key, CORS)
-│   ├── config/             # Viper configuration loading
-│   ├── domain/
-│   │   ├── agent/          # Agent identity and trust levels
-│   │   ├── audit/          # Decision logging and trail
-│   │   ├── auth/           # SQL-based RBAC authorizer
-│   │   ├── context/        # Token-budgeted context delivery
-│   │   ├── documentation/  # Auto-generated reports from decisions
-│   │   ├── governance/     # Unified policy engine (OPA, blast radius, time)
-│   │   └── user/           # User domain: roles, password hashing, JWT token service
-│   ├── mcp/                # MCP protocol, tools, HTTP sidecar
-│   ├── store/              # Storage interfaces (including UserStore)
-│   └── infrastructure/     # Database clients (SQLite, Postgres, Neo4j, Qdrant)
-├── policies/               # OPA/Rego policy files
-│   └── default.rego        # Default governance rules
-├── migrations/             # Database migrations (SQLite, Postgres, Neo4j)
-├── hooks/                  # Git hooks (pre-commit, post-commit, pre-push)
-├── docker-compose.yml
-└── docs/
-```
-
-## Documentation
-
-See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for comprehensive developer documentation covering:
-
-- Architecture and design decisions
-- MCP tools reference with parameters and examples
-- Governance model (trust levels, blast radius, escalation workflow)
-- Policy engine (builtin policies, OPA/Rego, time-based rules, simulation)
-- Deployment options (local, Docker Compose, Kubernetes/Helm, container images)
-- Authentication and user management (API key, JWT, local auth, RBAC)
-- Backstage integration
-- Security model (headers, CORS, session tokens, rate limiting)
-- Multi-tenancy
-- Configuration reference
-- HTTP API reference
-
-Additional documentation:
-- [docs/ENFORCEMENT_OPTIONS.md](docs/ENFORCEMENT_OPTIONS.md) -- Policy enforcement models comparison
-- [docs/RAILWAY_DEPLOYMENT.md](docs/RAILWAY_DEPLOYMENT.md) -- Railway deployment guide
-
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for planned features and priorities.
+See [ROADMAP.md](ROADMAP.md) for phases and non-goals.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and how to submit changes.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The fastest way to move something up the roadmap is to contribute it — Tier-0 trust fixes and test coverage are the highest-impact entry points.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+Apache License 2.0 — see [LICENSE](LICENSE).
