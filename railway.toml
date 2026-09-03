@@ -1,0 +1,12 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "./Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+# 5s was below the worst-case startup budget: PG connect (10s client ping
+# timeout) + migrations on a cold Railway network. 180s covers cold starts.
+healthcheckTimeout = 180
+startCommand = "/usr/local/bin/adp-server"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
